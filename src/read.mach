@@ -1,0 +1,157 @@
+# bounds-checked big-endian reads over an in-memory font file.
+#
+# truetype and opentype store every scalar big-endian. font files are untrusted
+# input, so each read validates that the requested span lies within the backing
+# buffer before touching it: on success the value is written through the out
+# param and the read returns true; on an out-of-range span it returns false and
+# leaves the out param untouched.
+
+use std.types.bool.bool;
+use std.types.bool.true;
+use std.types.bool.false;
+use std.types.size.usize;
+
+# read the byte at off.
+# ---
+# data: pointer to the first byte of the file
+# len:  number of bytes addressable through data
+# off:  byte offset to read from
+# out:  receives the byte on success
+# ret:  true when off < len, false otherwise
+pub fun read_u8(data: *u8, len: usize, off: usize, out: *u8) bool {
+    if (off >= len) { ret false; }
+    out[0] = data[off];
+    ret true;
+}
+
+# read a big-endian u16 at off.
+# ---
+# data: pointer to the first byte of the file
+# len:  number of bytes addressable through data
+# off:  byte offset to read from
+# out:  receives the value on success
+# ret:  true when [off, off+2) is within len, false otherwise
+pub fun read_u16(data: *u8, len: usize, off: usize, out: *u16) bool {
+    if (off + 2 > len) { ret false; }
+    val hi: u16 = data[off]::u16;
+    val lo: u16 = data[off + 1]::u16;
+    out[0] = (hi << 8) | lo;
+    ret true;
+}
+
+# read a big-endian i16 at off.
+# ---
+# data: pointer to the first byte of the file
+# len:  number of bytes addressable through data
+# off:  byte offset to read from
+# out:  receives the value on success
+# ret:  true when [off, off+2) is within len, false otherwise
+pub fun read_i16(data: *u8, len: usize, off: usize, out: *i16) bool {
+    var v: u16 = 0;
+    if (!read_u16(data, len, off, ?v)) { ret false; }
+    out[0] = v::i16;
+    ret true;
+}
+
+# read a big-endian u32 at off.
+# ---
+# data: pointer to the first byte of the file
+# len:  number of bytes addressable through data
+# off:  byte offset to read from
+# out:  receives the value on success
+# ret:  true when [off, off+4) is within len, false otherwise
+pub fun read_u32(data: *u8, len: usize, off: usize, out: *u32) bool {
+    if (off + 4 > len) { ret false; }
+    val b0: u32 = data[off]::u32;
+    val b1: u32 = data[off + 1]::u32;
+    val b2: u32 = data[off + 2]::u32;
+    val b3: u32 = data[off + 3]::u32;
+    out[0] = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
+    ret true;
+}
+
+# test whether the four bytes at off equal a table tag.
+#
+# table directory entries name a table by a four-byte tag (`glyf`, `cmap`, ...);
+# this compares in place without materializing a string.
+# ---
+# data:       pointer to the first byte of the file
+# len:        number of bytes addressable through data
+# off:        byte offset of the candidate tag
+# a, b, c, d: the four tag bytes to match
+# ret:        true when [off, off+4) is within len and matches, false otherwise
+pub fun tag_eq(data: *u8, len: usize, off: usize, a: u8, b: u8, c: u8, d: u8) bool {
+    if (off + 4 > len) { ret false; }
+    if (data[off] != a) { ret false; }
+    if (data[off + 1] != b) { ret false; }
+    if (data[off + 2] != c) { ret false; }
+    if (data[off + 3] != d) { ret false; }
+    ret true;
+}
+
+var test_buf: [8]u8;
+
+test "read: u8 in range" {
+    test_buf[0] = 0x2A;
+    var v: u8 = 0;
+    if (!read_u8(?test_buf[0], 8, 0, ?v)) { ret 1; }
+    if (v != 0x2A) { ret 1; }
+    ret 0;
+}
+
+test "read: u8 out of range" {
+    var v: u8 = 0xFF;
+    if (read_u8(?test_buf[0], 4, 4, ?v)) { ret 1; }
+    if (v != 0xFF) { ret 1; }
+    ret 0;
+}
+
+test "read: u16 big-endian" {
+    test_buf[0] = 0x12;
+    test_buf[1] = 0x34;
+    var v: u16 = 0;
+    if (!read_u16(?test_buf[0], 8, 0, ?v)) { ret 1; }
+    if (v != 0x1234) { ret 1; }
+    ret 0;
+}
+
+test "read: u16 truncated span" {
+    var v: u16 = 0;
+    if (read_u16(?test_buf[0], 8, 7, ?v)) { ret 1; }
+    ret 0;
+}
+
+test "read: i16 negative" {
+    test_buf[0] = 0xFF;
+    test_buf[1] = 0xFE;
+    var v: i16 = 0;
+    if (!read_i16(?test_buf[0], 8, 0, ?v)) { ret 1; }
+    if (v != -2) { ret 1; }
+    ret 0;
+}
+
+test "read: u32 big-endian" {
+    test_buf[0] = 0xDE;
+    test_buf[1] = 0xAD;
+    test_buf[2] = 0xBE;
+    test_buf[3] = 0xEF;
+    var v: u32 = 0;
+    if (!read_u32(?test_buf[0], 8, 0, ?v)) { ret 1; }
+    if (v != 0xDEADBEEF) { ret 1; }
+    ret 0;
+}
+
+test "read: tag match" {
+    test_buf[0] = 'g';
+    test_buf[1] = 'l';
+    test_buf[2] = 'y';
+    test_buf[3] = 'f';
+    if (!tag_eq(?test_buf[0], 8, 0, 'g', 'l', 'y', 'f')) { ret 1; }
+    if (tag_eq(?test_buf[0], 8, 0, 'c', 'm', 'a', 'p')) { ret 1; }
+    ret 0;
+}
+
+test "read: tag out of range" {
+    if (tag_eq(?test_buf[0], 2, 0, 'g', 'l', 'y', 'f')) { ret 1; }
+    ret 0;
+}
