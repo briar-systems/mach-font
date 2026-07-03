@@ -15,6 +15,7 @@ use font.hmtx;
 use font.cmap;
 use font.loca;
 use font.glyf;
+use font.raster;
 use font.info;
 # links the startup entrypoint so `mach test` over this library produces a binary.
 use std.runtime;
@@ -50,8 +51,14 @@ fwd glyf.is_composite;
 fwd glyf.point_count;
 fwd glyf.extract_simple;
 
+fwd raster.Edge;
+fwd raster.flatten;
+fwd raster.fill;
+
 fwd info.Font;
 fwd info.init;
 fwd info.glyph_hmetrics;
 fwd info.glyph_index;
 fwd info.glyph_outline;
+fwd info.scale_for_pixel_height;
+fwd info.render_glyph;

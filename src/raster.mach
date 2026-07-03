@@ -1,0 +1,301 @@
+# font.raster: outline flattening and coverage rasterization.
+#
+# a glyph outline is a set of contours of on- and off-curve points describing
+# quadratic bezier segments. this module flattens those curves into straight
+# line edges in pixel space, then fills an 8-bit coverage bitmap from the edges
+# using the nonzero winding rule with box supersampling for anti-aliasing. the
+# flattener follows the standard truetype on/off-curve walk, inserting the
+# implied on-curve midpoint between consecutive control points and closing each
+# contour back to its start. output buffers are caller-provided, so the module
+# allocates nothing.
+
+use font.glyf;
+use std.types.bool.bool;
+use std.types.bool.true;
+use std.types.bool.false;
+use std.types.size.usize;
+
+# supersampling factor per axis; coverage is sampled on an SS by SS subgrid.
+val SS: usize = 4;
+# subdivision recursion cap for flattening a quadratic segment.
+val MAX_DEPTH: usize = 16;
+# squared flatness tolerance in pixels; below this a quad is emitted as a line.
+val TOL_SQ: f32 = 0.1;
+
+# Edge: a directed line segment in pixel space (y increases downward).
+# ---
+# x0, y0: start point
+# x1, y1: end point
+pub rec Edge {
+    x0: f32;
+    y0: f32;
+    x1: f32;
+    y1: f32;
+}
+
+# append an edge, returning false if the buffer is full.
+fun push_edge(edges: *Edge, cap: usize, count: *usize, x0: f32, y0: f32, x1: f32, y1: f32) bool {
+    if (count[0] >= cap) { ret false; }
+    edges[count[0]] = Edge{ x0: x0, y0: y0, x1: x1, y1: y1 };
+    count[0] = count[0] + 1;
+    ret true;
+}
+
+# recursively flatten a quadratic bezier into edges by midpoint subdivision.
+fun flatten_quad(edges: *Edge, cap: usize, count: *usize, x0: f32, y0: f32, cx: f32, cy: f32, x1: f32, y1: f32, depth: usize) bool {
+    # deviation of the control point from the chord midpoint bounds the flatness.
+    val mx: f32 = (x0 + x1) * 0.5;
+    val my: f32 = (y0 + y1) * 0.5;
+    val dx: f32 = cx - mx;
+    val dy: f32 = cy - my;
+    if (dx * dx + dy * dy <= TOL_SQ || depth >= MAX_DEPTH) {
+        ret push_edge(edges, cap, count, x0, y0, x1, y1);
+    }
+
+    val ax: f32 = (x0 + cx) * 0.5;
+    val ay: f32 = (y0 + cy) * 0.5;
+    val bx: f32 = (cx + x1) * 0.5;
+    val by: f32 = (cy + y1) * 0.5;
+    val midx: f32 = (ax + bx) * 0.5;
+    val midy: f32 = (ay + by) * 0.5;
+
+    if (!flatten_quad(edges, cap, count, x0, y0, ax, ay, midx, midy, depth + 1)) { ret false; }
+    ret flatten_quad(edges, cap, count, midx, midy, bx, by, x1, y1, depth + 1);
+}
+
+# transform a glyph point into pixel space, flipping the y axis so the font's
+# upward y maps to the bitmap's downward rows.
+fun tx(pts: *glyf.Point, i: usize, scale: f32, x_off: f32, y_off: f32, height: f32, out_x: *f32, out_y: *f32) {
+    out_x[0] = pts[i].x::f32 * scale + x_off;
+    out_y[0] = height - (pts[i].y::f32 * scale + y_off);
+}
+
+# flatten one contour (points s..e inclusive) into edges.
+fun flatten_contour(pts: *glyf.Point, s: usize, e: usize, scale: f32, x_off: f32, y_off: f32, height: f32, edges: *Edge, cap: usize, count: *usize) bool {
+    if (e < s + 1) { ret true; }
+
+    var sx: f32 = 0.0;
+    var sy: f32 = 0.0;
+    var scx: f32 = 0.0;
+    var scy: f32 = 0.0;
+    var start_off: bool = false;
+    var first: usize = s + 1;
+
+    if (pts[s].on_curve) {
+        tx(pts, s, scale, x_off, y_off, height, ?sx, ?sy);
+    }
+    or {
+        start_off = true;
+        tx(pts, s, scale, x_off, y_off, height, ?scx, ?scy);
+        if (pts[s + 1].on_curve) {
+            tx(pts, s + 1, scale, x_off, y_off, height, ?sx, ?sy);
+            first = s + 2;
+        }
+        or {
+            # start at the implied midpoint of the two leading control points.
+            var ax: f32 = 0.0; var ay: f32 = 0.0;
+            var bx: f32 = 0.0; var by: f32 = 0.0;
+            tx(pts, s, scale, x_off, y_off, height, ?ax, ?ay);
+            tx(pts, s + 1, scale, x_off, y_off, height, ?bx, ?by);
+            sx = (ax + bx) * 0.5;
+            sy = (ay + by) * 0.5;
+            first = s + 1;
+        }
+    }
+
+    var curx: f32 = sx;
+    var cury: f32 = sy;
+    var cx: f32 = 0.0;
+    var cy: f32 = 0.0;
+    var was_off: bool = false;
+
+    var k: usize = first;
+    for (k <= e) {
+        var px: f32 = 0.0;
+        var py: f32 = 0.0;
+        tx(pts, k, scale, x_off, y_off, height, ?px, ?py);
+
+        if (pts[k].on_curve) {
+            if (was_off) {
+                if (!flatten_quad(edges, cap, count, curx, cury, cx, cy, px, py, 0)) { ret false; }
+            }
+            or {
+                if (!push_edge(edges, cap, count, curx, cury, px, py)) { ret false; }
+            }
+            curx = px;
+            cury = py;
+            was_off = false;
+        }
+        or {
+            if (was_off) {
+                # implied on-curve midpoint between the two control points.
+                val mx: f32 = (cx + px) * 0.5;
+                val my: f32 = (cy + py) * 0.5;
+                if (!flatten_quad(edges, cap, count, curx, cury, cx, cy, mx, my, 0)) { ret false; }
+                curx = mx;
+                cury = my;
+            }
+            cx = px;
+            cy = py;
+            was_off = true;
+        }
+        k = k + 1;
+    }
+
+    if (start_off) {
+        if (was_off) {
+            val mx: f32 = (cx + scx) * 0.5;
+            val my: f32 = (cy + scy) * 0.5;
+            if (!flatten_quad(edges, cap, count, curx, cury, cx, cy, mx, my, 0)) { ret false; }
+            curx = mx;
+            cury = my;
+        }
+        ret flatten_quad(edges, cap, count, curx, cury, scx, scy, sx, sy, 0);
+    }
+
+    if (was_off) {
+        ret flatten_quad(edges, cap, count, curx, cury, cx, cy, sx, sy, 0);
+    }
+    ret push_edge(edges, cap, count, curx, cury, sx, sy);
+}
+
+# flatten a glyph outline into pixel-space line edges.
+#
+# each contour's quadratic segments are subdivided into line edges and appended
+# to the caller's edge buffer. coordinates are scaled uniformly and the y axis is
+# flipped so font-up maps to bitmap rows growing downward. reports failure only
+# when the edge buffer overflows.
+# ---
+# pts:          extracted glyph points
+# num_points:   number of points in pts
+# ends:         each contour's inclusive end index within pts
+# num_contours: number of contours
+# scale:        design-unit-to-pixel scale factor
+# x_off, y_off: pixel offsets added after scaling (y before the flip)
+# height:       bitmap height in pixels, used for the y flip
+# edges:        buffer receiving the flattened edges
+# cap:          capacity of edges
+# out_count:    receives the number of edges written
+# ret:          true when every contour fit in the edge buffer
+pub fun flatten(pts: *glyf.Point, num_points: u16, ends: *u16, num_contours: u16, scale: f32, x_off: f32, y_off: f32, height: u16, edges: *Edge, cap: usize, out_count: *usize) bool {
+    var count: usize = 0;
+    val h: f32 = height::f32;
+
+    var j: usize = 0;
+    var start: usize = 0;
+    for (j < num_contours::usize) {
+        val end: usize = ends[j]::usize;
+        if (end >= num_points::usize) { ret false; }
+        if (!flatten_contour(pts, start, end, scale, x_off, y_off, h, edges, cap, ?count)) { ret false; }
+        start = end + 1;
+        j = j + 1;
+    }
+
+    out_count[0] = count;
+    ret true;
+}
+
+# compute the nonzero winding number at a sample point against all edges.
+fun winding_at(edges: *Edge, count: usize, sx: f32, sy: f32) i32 {
+    var w: i32 = 0;
+    var k: usize = 0;
+    for (k < count) {
+        val y0: f32 = edges[k].y0;
+        val y1: f32 = edges[k].y1;
+        # half-open straddle test avoids double-counting shared vertices.
+        if ((y0 <= sy) != (y1 <= sy)) {
+            val t: f32 = (sy - y0) / (y1 - y0);
+            val x_at: f32 = edges[k].x0 + t * (edges[k].x1 - edges[k].x0);
+            if (sx < x_at) {
+                if (y1 > y0) { w = w + 1; }
+                or { w = w - 1; }
+            }
+        }
+        k = k + 1;
+    }
+    ret w;
+}
+
+# fill an 8-bit coverage bitmap from edges using nonzero winding and supersampling.
+#
+# each pixel is sampled on an SS by SS subgrid; the covered sample fraction maps
+# to a 0..255 coverage value. the bitmap is row-major, one byte per pixel.
+# ---
+# edges:  flattened outline edges in pixel space
+# count:  number of edges
+# bitmap: row-major width*height output buffer
+# width:  bitmap width in pixels
+# height: bitmap height in pixels
+pub fun fill(edges: *Edge, count: usize, bitmap: *u8, width: u16, height: u16) {
+    val w: usize = width::usize;
+    val h: usize = height::usize;
+    val inv: f32 = 1.0 / SS::f32;
+
+    var py: usize = 0;
+    for (py < h) {
+        var px: usize = 0;
+        for (px < w) {
+            var hits: usize = 0;
+            var sub_y: usize = 0;
+            for (sub_y < SS) {
+                val sy: f32 = py::f32 + (sub_y::f32 + 0.5) * inv;
+                var sub_x: usize = 0;
+                for (sub_x < SS) {
+                    val sx: f32 = px::f32 + (sub_x::f32 + 0.5) * inv;
+                    if (winding_at(edges, count, sx, sy) != 0) { hits = hits + 1; }
+                    sub_x = sub_x + 1;
+                }
+                sub_y = sub_y + 1;
+            }
+            bitmap[py * w + px] = (hits * 255 / (SS * SS))::u8;
+            px = px + 1;
+        }
+        py = py + 1;
+    }
+}
+
+var sq_pts: [4]glyf.Point;
+var sq_ends: [1]u16;
+var sq_edges: [64]Edge;
+var sq_bmp: [64]u8;
+
+# an axis-aligned square contour, all on-curve, in font units.
+fun build_square() {
+    sq_pts[0] = glyf.Point{ x: 0,   y: 0,   on_curve: true };
+    sq_pts[1] = glyf.Point{ x: 100, y: 0,   on_curve: true };
+    sq_pts[2] = glyf.Point{ x: 100, y: 100, on_curve: true };
+    sq_pts[3] = glyf.Point{ x: 0,   y: 100, on_curve: true };
+    sq_ends[0] = 3;
+}
+
+test "raster: flatten square yields four edges" {
+    build_square();
+    var n: usize = 0;
+    # scale 100 font units to 8 pixels
+    if (!flatten(?sq_pts[0], 4, ?sq_ends[0], 1, 0.08, 0.0, 0.0, 8, ?sq_edges[0], 64, ?n)) { ret 1; }
+    if (n != 4) { ret 1; }
+    ret 0;
+}
+
+test "raster: fill square covers interior" {
+    build_square();
+    var n: usize = 0;
+    if (!flatten(?sq_pts[0], 4, ?sq_ends[0], 1, 0.08, 0.0, 0.0, 8, ?sq_edges[0], 64, ?n)) { ret 1; }
+    fill(?sq_edges[0], n, ?sq_bmp[0], 8, 8);
+    # the 100x100-unit square scaled by 0.08 covers the whole 8x8 bitmap.
+    if (sq_bmp[3 * 8 + 3] != 255) { ret 1; }   # center fully covered
+    if (sq_bmp[3 * 8 + 4] != 255) { ret 1; }
+    ret 0;
+}
+
+test "raster: fill leaves exterior empty" {
+    build_square();
+    var n: usize = 0;
+    # scale the square to only the top-left 4x4 region of a 16x16 bitmap
+    if (!flatten(?sq_pts[0], 4, ?sq_ends[0], 1, 0.04, 0.0, 12.0, 16, ?sq_edges[0], 64, ?n)) { ret 1; }
+    var big: [256]u8;
+    fill(?sq_edges[0], n, ?big[0], 16, 16);
+    # a pixel far from the square is empty
+    if (big[15 * 16 + 15] != 0) { ret 1; }
+    ret 0;
+}
