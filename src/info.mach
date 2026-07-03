@@ -15,6 +15,8 @@ use font.maxp;
 use font.hhea;
 use font.hmtx;
 use font.cmap;
+use font.loca;
+use font.glyf;
 use std.types.bool.bool;
 use std.types.bool.true;
 use std.types.bool.false;
@@ -147,6 +149,38 @@ pub fun glyph_hmetrics(f: *Font, glyph: u16, out_advance: *u16, out_lsb: *i16) b
 pub fun glyph_index(f: *Font, codepoint: u32, out: *u16) bool {
     if (f.cmap_sub == 0) { ret false; }
     ret cmap.lookup(f.data, f.len, f.cmap_sub, codepoint, out);
+}
+
+# extract a glyph's outline into caller-provided buffers.
+#
+# resolves the glyph's data range through loca, then extracts its simple-glyph
+# contours through glyf. an empty glyph (no outline, e.g. a space) succeeds with
+# zero counts. reports failure when loca or glyf is absent, the glyph is out of
+# range or composite, or a buffer is too small.
+# ---
+# f:        prepared font handle
+# glyph:    glyph index to extract
+# pts:      buffer receiving the extracted points
+# pts_cap:  capacity of pts in points
+# ends:     buffer receiving each contour's end point index
+# ends_cap: capacity of ends in entries
+# out:      receives the written contour and point counts
+# ret:      true on a fully extracted (possibly empty) glyph, false otherwise
+pub fun glyph_outline(f: *Font, glyph: u16, pts: *glyf.Point, pts_cap: usize, ends: *u16, ends_cap: usize, out: *glyf.Outline) bool {
+    if (f.loca_off == 0 || f.glyf_off == 0) { ret false; }
+    if (glyph >= f.num_glyphs) { ret false; }
+
+    var start: u32 = 0;
+    var end:   u32 = 0;
+    if (!loca.glyph_range(f.data, f.len, f.loca_off, f.index_to_loc_format, glyph, ?start, ?end)) { ret false; }
+
+    if (start == end) {
+        out[0] = glyf.Outline{ num_contours: 0, num_points: 0 };
+        ret true;
+    }
+
+    val goff: usize = f.glyf_off + start::usize;
+    ret glyf.extract_simple(f.data, f.len, goff, pts, pts_cap, ends, ends_cap, out);
 }
 
 fun w16(buf: *u8, off: usize, v: u16) {

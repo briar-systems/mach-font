@@ -13,6 +13,8 @@ use font.maxp;
 use font.hhea;
 use font.hmtx;
 use font.cmap;
+use font.loca;
+use font.glyf;
 use font.info;
 # links the startup entrypoint so `mach test` over this library produces a binary.
 use std.runtime;
@@ -38,7 +40,18 @@ fwd hmtx.metrics;
 fwd cmap.select_subtable;
 fwd cmap.lookup;
 
+fwd loca.glyph_range;
+
+fwd glyf.Point;
+fwd glyf.GlyphInfo;
+fwd glyf.Outline;
+fwd glyf.glyph_header;
+fwd glyf.is_composite;
+fwd glyf.point_count;
+fwd glyf.extract_simple;
+
 fwd info.Font;
 fwd info.init;
 fwd info.glyph_hmetrics;
 fwd info.glyph_index;
+fwd info.glyph_outline;
