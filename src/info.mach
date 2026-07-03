@@ -288,72 +288,164 @@ fun tag(buf: *u8, off: usize, a: u8, b: u8, c: u8, d: u8) {
     buf[off + 3] = d;
 }
 
-# a four-table font: head, hhea, hmtx, maxp, no outlines.
-var font_buf: [200]u8;
+# a complete minimal font: head, maxp, hhea, hmtx, cmap, loca, glyf. two glyphs
+# (0 empty, 1 a triangle); the cmap maps 'A' to glyph 1. tables built by hand,
+# mirroring the parsers in reverse.
+var font_buf: [320]u8;
 
 fun build_font() {
     val p: *u8 = ?font_buf[0];
 
     w32(p, 0, 0x00010000);   # sfnt version
-    w16(p, 4, 4);            # numTables
+    w16(p, 4, 7);            # numTables
     w16(p, 6, 0);
     w16(p, 8, 0);
     w16(p, 10, 0);
 
-    tag(p, 12, 'h', 'e', 'a', 'd'); w32(p, 20, 76);  w32(p, 24, 54);
-    tag(p, 28, 'h', 'h', 'e', 'a'); w32(p, 36, 136); w32(p, 40, 36);
-    tag(p, 44, 'h', 'm', 't', 'x'); w32(p, 52, 172); w32(p, 56, 12);
-    tag(p, 60, 'm', 'a', 'x', 'p'); w32(p, 68, 130); w32(p, 72, 6);
+    # directory entries: tag, checksum (0), offset, length
+    tag(p, 12,  'c', 'm', 'a', 'p'); w32(p, 20,  228); w32(p, 24,  44);
+    tag(p, 28,  'g', 'l', 'y', 'f'); w32(p, 36,  278); w32(p, 40,  24);
+    tag(p, 44,  'h', 'e', 'a', 'd'); w32(p, 52,  124); w32(p, 56,  54);
+    tag(p, 60,  'h', 'h', 'e', 'a'); w32(p, 68,  184); w32(p, 72,  36);
+    tag(p, 76,  'h', 'm', 't', 'x'); w32(p, 84,  220); w32(p, 88,  8);
+    tag(p, 92,  'l', 'o', 'c', 'a'); w32(p, 100, 272); w32(p, 104, 6);
+    tag(p, 108, 'm', 'a', 'x', 'p'); w32(p, 116, 178); w32(p, 120, 6);
 
-    # head @76
-    font_buf[76 + 12] = 0x5F;
-    font_buf[76 + 13] = 0x0F;
-    font_buf[76 + 14] = 0x3C;
-    font_buf[76 + 15] = 0xF5;
-    w16(p, 76 + 18, 1000);      # units_per_em
-    w16(p, 76 + 50, 0);         # index_to_loc_format = short
+    # head @124
+    font_buf[124 + 12] = 0x5F;
+    font_buf[124 + 13] = 0x0F;
+    font_buf[124 + 14] = 0x3C;
+    font_buf[124 + 15] = 0xF5;
+    w16(p, 124 + 18, 1000);      # units_per_em
+    w16(p, 124 + 50, 0);         # index_to_loc_format = short
 
-    # maxp @130
-    w32(p, 130, 0x00010000);
-    w16(p, 130 + 4, 4);         # numGlyphs
+    # maxp @178
+    w32(p, 178, 0x00010000);
+    w16(p, 178 + 4, 2);          # numGlyphs
 
-    # hhea @136
-    w16(p, 136 + 4, 800);       # ascent
-    w16(p, 136 + 6, 0xFF38);    # descent = -200
-    w16(p, 136 + 34, 2);        # num_h_metrics
+    # hhea @184
+    w16(p, 184 + 4, 800);        # ascent
+    w16(p, 184 + 6, 0xFF38);     # descent = -200
+    w16(p, 184 + 34, 2);         # num_h_metrics
 
-    # hmtx @172: 2 long metrics + 2 bearings
-    w16(p, 172 + 0, 600);       # glyph 0 advance
-    w16(p, 172 + 2, 40);        # glyph 0 lsb
-    w16(p, 172 + 4, 650);       # glyph 1 advance
-    w16(p, 172 + 6, 55);        # glyph 1 lsb
-    w16(p, 172 + 8, 60);        # glyph 2 lsb
-    w16(p, 172 + 10, 70);       # glyph 3 lsb
+    # hmtx @220: 2 long metrics
+    w16(p, 220 + 0, 500);        # glyph 0 advance
+    w16(p, 220 + 2, 0);          # glyph 0 lsb
+    w16(p, 220 + 4, 650);        # glyph 1 advance
+    w16(p, 220 + 6, 40);         # glyph 1 lsb
+
+    # cmap @228
+    w16(p, 228 + 0, 0);          # version
+    w16(p, 228 + 2, 1);          # numTables
+    w16(p, 228 + 4, 3);          # platformID = windows
+    w16(p, 228 + 6, 1);          # encodingID = BMP unicode
+    w32(p, 228 + 8, 12);         # subtable offset (relative to cmap)
+    # format 4 subtable @240: 'A' -> glyph 1
+    w16(p, 240 + 0, 4);          # format
+    w16(p, 240 + 2, 32);         # length
+    w16(p, 240 + 4, 0);          # language
+    w16(p, 240 + 6, 4);          # segCountX2 (2 segments)
+    w16(p, 254, 0x41);           # endCode[0]
+    w16(p, 256, 0xFFFF);         # endCode[1]
+    w16(p, 258, 0);              # reservedPad
+    w16(p, 260, 0x41);           # startCode[0]
+    w16(p, 262, 0xFFFF);         # startCode[1]
+    w16(p, 264, 0xFFC0);         # idDelta[0] = -64: 'A'(0x41) -> 1
+    w16(p, 266, 1);              # idDelta[1]
+    w16(p, 268, 0);              # idRangeOffset[0]
+    w16(p, 270, 0);              # idRangeOffset[1]
+
+    # loca @272: short offsets (halved). glyph 0 empty, glyph 1 = [0, 24)
+    w16(p, 272, 0);
+    w16(p, 274, 0);
+    w16(p, 276, 12);
+
+    # glyf @278: glyph 1 is a triangle (100,100), (300,100), (200,400)
+    w16(p, 278, 1);              # numberOfContours
+    w16(p, 280, 100);            # xMin
+    w16(p, 282, 100);            # yMin
+    w16(p, 284, 300);            # xMax
+    w16(p, 286, 400);            # yMax
+    w16(p, 288, 2);              # endPtsOfContours[0]
+    w16(p, 290, 0);              # instructionLength
+    font_buf[292] = 0x37;        # p0: on, x short +, y short +
+    font_buf[293] = 0x33;        # p1: on, x short +, y same
+    font_buf[294] = 0x03;        # p2: on, x short -, y i16
+    font_buf[295] = 100;         # p0 x = +100
+    font_buf[296] = 200;         # p1 x = +200
+    font_buf[297] = 100;         # p2 x = -100
+    font_buf[298] = 100;         # p0 y = +100
+    w16(p, 299, 300);            # p2 y = +300 (i16)
 }
 
-test "info: init reads globals and locates tables" {
+var e2e_pts: [8]glyf.Point;
+var e2e_ends: [4]u16;
+var e2e_edges: [64]raster.Edge;
+var e2e_bmp: [64]u8;
+
+test "info: init locates every table and reads globals" {
     build_font();
     var f: Font;
-    if (!init(?font_buf[0], 200, ?f)) { ret 1; }
+    if (!init(?font_buf[0], 320, ?f)) { ret 1; }
     if (f.units_per_em != 1000) { ret 1; }
     if (f.index_to_loc_format != 0) { ret 1; }
-    if (f.num_glyphs != 4) { ret 1; }
+    if (f.num_glyphs != 2) { ret 1; }
     if (f.num_h_metrics != 2) { ret 1; }
-    if (f.head_off != 76) { ret 1; }
-    if (f.hmtx_off != 172) { ret 1; }
-    if (f.glyf_off != 0) { ret 1; }   # absent table recorded as 0
+    if (f.ascent != 800 || f.descent != -200) { ret 1; }
+    if (f.glyf_off != 278 || f.loca_off != 272) { ret 1; }
+    if (f.cmap_sub != 240) { ret 1; }
+    ret 0;
+}
+
+test "info: cmap maps 'A' to glyph 1" {
+    build_font();
+    var f: Font;
+    if (!init(?font_buf[0], 320, ?f)) { ret 1; }
+    var g: u16 = 0;
+    if (!glyph_index(?f, 0x41, ?g)) { ret 1; }
+    if (g != 1) { ret 1; }
+    # an unmapped codepoint resolves to glyph 0
+    if (!glyph_index(?f, 0x42, ?g)) { ret 1; }
+    if (g != 0) { ret 1; }
     ret 0;
 }
 
 test "info: glyph_hmetrics via facade" {
     build_font();
     var f: Font;
-    if (!init(?font_buf[0], 200, ?f)) { ret 1; }
+    if (!init(?font_buf[0], 320, ?f)) { ret 1; }
     var adv: u16 = 0;
     var lsb: i16 = 0;
-    if (!glyph_hmetrics(?f, 3, ?adv, ?lsb)) { ret 1; }
-    if (adv != 650) { ret 1; }   # trailing glyph shares last advance
-    if (lsb != 70) { ret 1; }
+    if (!glyph_hmetrics(?f, 1, ?adv, ?lsb)) { ret 1; }
+    if (adv != 650 || lsb != 40) { ret 1; }
+    ret 0;
+}
+
+test "info: outline extraction end to end" {
+    build_font();
+    var f: Font;
+    if (!init(?font_buf[0], 320, ?f)) { ret 1; }
+    var o: glyf.Outline;
+    if (!glyph_outline(?f, 1, ?e2e_pts[0], 8, ?e2e_ends[0], 4, ?o)) { ret 1; }
+    if (o.num_contours != 1 || o.num_points != 3) { ret 1; }
+    if (e2e_pts[0].x != 100 || e2e_pts[0].y != 100) { ret 1; }
+    if (e2e_pts[1].x != 300 || e2e_pts[1].y != 100) { ret 1; }
+    if (e2e_pts[2].x != 200 || e2e_pts[2].y != 400) { ret 1; }
+    # glyph 0 is empty
+    if (!glyph_outline(?f, 0, ?e2e_pts[0], 8, ?e2e_ends[0], 4, ?o)) { ret 1; }
+    if (o.num_contours != 0 || o.num_points != 0) { ret 1; }
+    ret 0;
+}
+
+test "info: render glyph covers interior, leaves corner empty" {
+    build_font();
+    var f: Font;
+    if (!init(?font_buf[0], 320, ?f)) { ret 1; }
+    if (!render_glyph(?f, 1, 0.02, ?e2e_pts[0], 8, ?e2e_ends[0], 4, ?e2e_edges[0], 64, ?e2e_bmp[0], 8, 8)) { ret 1; }
+    # the triangle centroid maps near pixel (2, 6)
+    if (e2e_bmp[6 * 8 + 2] == 0) { ret 1; }
+    # a far corner stays empty
+    if (e2e_bmp[7] != 0) { ret 1; }
     ret 0;
 }
 
@@ -361,6 +453,14 @@ test "info: non-truetype rejected" {
     build_font();
     w32(?font_buf[0], 0, 0x4F54544F);   # OTTO
     var f: Font;
-    if (init(?font_buf[0], 200, ?f)) { ret 1; }
+    if (init(?font_buf[0], 320, ?f)) { ret 1; }
+    ret 0;
+}
+
+test "info: truncated font rejected" {
+    build_font();
+    var f: Font;
+    # the directory claims 7 tables but only a few bytes are present
+    if (init(?font_buf[0], 20, ?f)) { ret 1; }
     ret 0;
 }
