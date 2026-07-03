@@ -1,4 +1,4 @@
-# font.raster: outline flattening and coverage rasterization.
+# outline flattening and coverage rasterization
 #
 # a glyph outline is a set of contours of on- and off-curve points describing
 # quadratic bezier segments. this module flattens those curves into straight
@@ -15,14 +15,14 @@ use std.types.bool.true;
 use std.types.bool.false;
 use std.types.size.usize;
 
-# supersampling factor per axis; coverage is sampled on an SS by SS subgrid.
+# supersampling factor per axis; coverage is sampled on an SS by SS subgrid
 val SS: usize = 4;
-# subdivision recursion cap for flattening a quadratic segment.
+# subdivision recursion cap for flattening a quadratic segment
 val MAX_DEPTH: usize = 16;
-# squared flatness tolerance in pixels; below this a quad is emitted as a line.
+# squared flatness tolerance in pixels; below this a quad is emitted as a line
 val TOL_SQ: f32 = 0.1;
 
-# Edge: a directed line segment in pixel space (y increases downward).
+# a directed line segment in pixel space (y increases downward)
 # ---
 # x0, y0: start point
 # x1, y1: end point
@@ -33,7 +33,7 @@ pub rec Edge {
     y1: f32;
 }
 
-# append an edge, returning false if the buffer is full.
+# append an edge, returning false if the buffer is full
 fun push_edge(edges: *Edge, cap: usize, count: *usize, x0: f32, y0: f32, x1: f32, y1: f32) bool {
     if (count[0] >= cap) { ret false; }
     edges[count[0]] = Edge{ x0: x0, y0: y0, x1: x1, y1: y1 };
@@ -41,7 +41,7 @@ fun push_edge(edges: *Edge, cap: usize, count: *usize, x0: f32, y0: f32, x1: f32
     ret true;
 }
 
-# recursively flatten a quadratic bezier into edges by midpoint subdivision.
+# recursively flatten a quadratic bezier into edges by midpoint subdivision
 fun flatten_quad(edges: *Edge, cap: usize, count: *usize, x0: f32, y0: f32, cx: f32, cy: f32, x1: f32, y1: f32, depth: usize) bool {
     # deviation of the control point from the chord midpoint bounds the flatness.
     val mx: f32 = (x0 + x1) * 0.5;
@@ -64,13 +64,13 @@ fun flatten_quad(edges: *Edge, cap: usize, count: *usize, x0: f32, y0: f32, cx: 
 }
 
 # transform a glyph point into pixel space, flipping the y axis so the font's
-# upward y maps to the bitmap's downward rows.
+# upward y maps to the bitmap's downward rows
 fun tx(pts: *glyf.Point, i: usize, scale: f32, x_off: f32, y_off: f32, height: f32, out_x: *f32, out_y: *f32) {
     out_x[0] = pts[i].x::f32 * scale + x_off;
     out_y[0] = height - (pts[i].y::f32 * scale + y_off);
 }
 
-# flatten one contour (points s..e inclusive) into edges.
+# flatten one contour (points s..e inclusive) into edges
 fun flatten_contour(pts: *glyf.Point, s: usize, e: usize, scale: f32, x_off: f32, y_off: f32, height: f32, edges: *Edge, cap: usize, count: *usize) bool {
     if (e < s + 1) { ret true; }
 
@@ -159,7 +159,7 @@ fun flatten_contour(pts: *glyf.Point, s: usize, e: usize, scale: f32, x_off: f32
     ret push_edge(edges, cap, count, curx, cury, sx, sy);
 }
 
-# flatten a glyph outline into pixel-space line edges.
+# flatten a glyph outline into pixel-space line edges
 #
 # each contour's quadratic segments are subdivided into line edges and appended
 # to the caller's edge buffer. coordinates are scaled uniformly and the y axis is
@@ -195,7 +195,7 @@ pub fun flatten(pts: *glyf.Point, num_points: u16, ends: *u16, num_contours: u16
     ret true;
 }
 
-# compute the nonzero winding number at a sample point against all edges.
+# compute the nonzero winding number at a sample point against all edges
 fun winding_at(edges: *Edge, count: usize, sx: f32, sy: f32) i32 {
     var w: i32 = 0;
     var k: usize = 0;
@@ -216,7 +216,7 @@ fun winding_at(edges: *Edge, count: usize, sx: f32, sy: f32) i32 {
     ret w;
 }
 
-# fill an 8-bit coverage bitmap from edges using nonzero winding and supersampling.
+# fill an 8-bit coverage bitmap from edges using nonzero winding and supersampling
 #
 # each pixel is sampled on an SS by SS subgrid; the covered sample fraction maps
 # to a 0..255 coverage value. the bitmap is row-major, one byte per pixel.
@@ -259,7 +259,7 @@ var sq_ends: [1]u16;
 var sq_edges: [64]Edge;
 var sq_bmp: [64]u8;
 
-# an axis-aligned square contour, all on-curve, in font units.
+# an axis-aligned square contour, all on-curve, in font units
 fun build_square() {
     sq_pts[0] = glyf.Point{ x: 0,   y: 0,   on_curve: true };
     sq_pts[1] = glyf.Point{ x: 100, y: 0,   on_curve: true };

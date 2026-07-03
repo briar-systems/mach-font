@@ -1,4 +1,4 @@
-# mach-font: pure-mach truetype parsing and rasterization.
+# pure-mach truetype parsing and rasterization
 #
 # the flat public surface. re-exports the parsing and rasterization primitives so
 # a bare `use font;` reaches the whole api as font.read_u16(...), font.tag_eq(...).

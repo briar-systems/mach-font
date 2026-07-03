@@ -1,4 +1,4 @@
-# font.cmap: character-to-glyph mapping.
+# character-to-glyph mapping
 #
 # the cmap table holds one or more encoding subtables, each mapping character
 # codes to glyph indices under some platform encoding. this module selects a
@@ -15,7 +15,7 @@ use std.types.bool.true;
 use std.types.bool.false;
 use std.types.size.usize;
 
-# select a unicode cmap subtable and return its absolute byte offset.
+# select a unicode cmap subtable and return its absolute byte offset
 #
 # scans the encoding records and prefers full-repertoire unicode (format 12
 # candidates) over basic-multilingual-plane unicode, and either over a symbol
@@ -57,7 +57,7 @@ pub fun select_subtable(data: *u8, len: usize, cmap_off: usize, out: *usize) boo
     ret true;
 }
 
-# rank a (platform, encoding) pair for unicode coverage; 0 means unusable.
+# rank a (platform, encoding) pair for unicode coverage; 0 means unusable
 fun encoding_score(platform: u16, encoding: u16) i32 {
     # windows full unicode (UCS-4)
     if (platform == 3 && encoding == 10) { ret 4; }
@@ -72,7 +72,7 @@ fun encoding_score(platform: u16, encoding: u16) i32 {
     ret 0;
 }
 
-# map a codepoint to a glyph index through a selected subtable.
+# map a codepoint to a glyph index through a selected subtable
 #
 # dispatches on the subtable format: 4 for segmented BMP coverage, 12 for
 # segmented full coverage. an unmapped codepoint yields glyph 0 with a true
@@ -93,7 +93,7 @@ pub fun lookup(data: *u8, len: usize, sub_off: usize, codepoint: u32, out: *u16)
     ret false;
 }
 
-# format 4: segmented coverage of the basic multilingual plane.
+# format 4: segmented coverage of the basic multilingual plane
 fun lookup_4(data: *u8, len: usize, sub_off: usize, codepoint: u32, out: *u16) bool {
     # format 4 covers only U+0000..U+FFFF; anything above is unmapped.
     if (codepoint > 0xFFFF) { out[0] = 0; ret true; }
@@ -157,7 +157,7 @@ fun w32(buf: *u8, off: usize, v: u32) {
     buf[off + 3] = (v & 0xFF)::u8;
 }
 
-# a format 4 subtable: A-C contiguous via idDelta, X via glyphIdArray.
+# a format 4 subtable: A-C contiguous via idDelta, X via glyphIdArray
 var f4: [64]u8;
 
 fun build_f4() {
@@ -222,7 +222,7 @@ test "cmap: format 4 unmapped yields glyph 0" {
     ret 0;
 }
 
-# a format 4 subtable wrapped in a cmap table with one encoding record.
+# a format 4 subtable wrapped in a cmap table with one encoding record
 var cmap_buf: [128]u8;
 
 fun build_cmap() {
@@ -260,7 +260,7 @@ test "cmap: no unicode subtable rejected" {
     ret 0;
 }
 
-# format 12: segmented coverage across the full codepoint range.
+# format 12: segmented coverage across the full codepoint range
 fun lookup_12(data: *u8, len: usize, sub_off: usize, codepoint: u32, out: *u16) bool {
     var num_groups: u32 = 0;
     if (!read.read_u32(data, len, sub_off + 12, ?num_groups)) { ret false; }
@@ -285,7 +285,7 @@ fun lookup_12(data: *u8, len: usize, sub_off: usize, codepoint: u32, out: *u16) 
     ret true;
 }
 
-# two groups: a BMP range and a single astral codepoint.
+# two groups: a BMP range and a single astral codepoint
 var f12: [40]u8;
 
 fun build_f12() {

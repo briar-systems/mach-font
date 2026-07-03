@@ -1,4 +1,4 @@
-# font.head: the font header table.
+# the font header table
 #
 # `head` carries the design grid size (unitsPerEm), the glyph bounding box, and
 # the flag that selects the `loca` offset encoding (short vs long). the table
@@ -11,10 +11,10 @@ use std.types.bool.true;
 use std.types.bool.false;
 use std.types.size.usize;
 
-# magic number stored at head+12 in every valid font header.
+# magic number stored at head+12 in every valid font header
 val MAGIC: u32 = 0x5F0F3CF5;
 
-# Head: the fields of the font header a rasterizer needs.
+# the fields of the font header a rasterizer needs
 # ---
 # units_per_em:        design units per em; the scale denominator for pixel sizing
 # index_to_loc_format: 0 selects short `loca` offsets, 1 selects long
@@ -31,7 +31,7 @@ pub rec Head {
     mac_style:           u16;
 }
 
-# parse the head table at off.
+# parse the head table at off
 #
 # validates the magic number before reading the remaining fields; a mismatch or
 # any out-of-range read reports failure.

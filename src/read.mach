@@ -1,4 +1,4 @@
-# bounds-checked big-endian reads over an in-memory font file.
+# bounds-checked big-endian reads over an in-memory font file
 #
 # truetype and opentype store every scalar big-endian. font files are untrusted
 # input, so each read validates that the requested span lies within the backing
@@ -11,7 +11,7 @@ use std.types.bool.true;
 use std.types.bool.false;
 use std.types.size.usize;
 
-# read the byte at off.
+# read the byte at off
 # ---
 # data: pointer to the first byte of the file
 # len:  number of bytes addressable through data
@@ -24,7 +24,7 @@ pub fun read_u8(data: *u8, len: usize, off: usize, out: *u8) bool {
     ret true;
 }
 
-# read a big-endian u16 at off.
+# read a big-endian u16 at off
 # ---
 # data: pointer to the first byte of the file
 # len:  number of bytes addressable through data
@@ -39,7 +39,7 @@ pub fun read_u16(data: *u8, len: usize, off: usize, out: *u16) bool {
     ret true;
 }
 
-# read a big-endian i16 at off.
+# read a big-endian i16 at off
 # ---
 # data: pointer to the first byte of the file
 # len:  number of bytes addressable through data
@@ -53,7 +53,7 @@ pub fun read_i16(data: *u8, len: usize, off: usize, out: *i16) bool {
     ret true;
 }
 
-# read a big-endian u32 at off.
+# read a big-endian u32 at off
 # ---
 # data: pointer to the first byte of the file
 # len:  number of bytes addressable through data
@@ -70,7 +70,7 @@ pub fun read_u32(data: *u8, len: usize, off: usize, out: *u32) bool {
     ret true;
 }
 
-# test whether the four bytes at off equal a table tag.
+# test whether the four bytes at off equal a table tag
 #
 # table directory entries name a table by a four-byte tag (`glyf`, `cmap`, ...);
 # this compares in place without materializing a string.

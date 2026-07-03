@@ -1,4 +1,4 @@
-# font.maxp: the maximum profile table.
+# the maximum profile table
 #
 # `maxp` states the glyph count, which bounds every glyph index and sizes the
 # `loca` array. only the glyph count is needed here; the version 1.0 storage
@@ -9,7 +9,7 @@ use font.read;
 use std.types.bool.bool;
 use std.types.size.usize;
 
-# read the glyph count from the maxp table at off.
+# read the glyph count from the maxp table at off
 #
 # numGlyphs sits at a fixed offset in both the 0.5 and 1.0 table versions, so no
 # version dispatch is needed to reach it.
