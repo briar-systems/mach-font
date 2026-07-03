@@ -1,4 +1,4 @@
-# font.glyf: glyph outline extraction.
+# glyph outline extraction
 #
 # a simple glyph in the glyf table is a header (contour count and bounding box)
 # followed by contour end indices, hinting instructions, and a compact
@@ -18,7 +18,7 @@ use std.types.bool.true;
 use std.types.bool.false;
 use std.types.size.usize;
 
-# simple-glyph point flag bits.
+# simple-glyph point flag bits
 val ON_CURVE:      u8 = 0x01;
 val X_SHORT:       u8 = 0x02;
 val Y_SHORT:       u8 = 0x04;
@@ -26,7 +26,7 @@ val REPEAT:        u8 = 0x08;
 val X_SAME_OR_POS: u8 = 0x10;
 val Y_SAME_OR_POS: u8 = 0x20;
 
-# Point: one outline point in font units.
+# one outline point in font units
 # ---
 # x:        x coordinate in font design units
 # y:        y coordinate in font design units
@@ -37,7 +37,7 @@ pub rec Point {
     on_curve: bool;
 }
 
-# GlyphInfo: a glyph's header.
+# a glyph's header
 # ---
 # num_contours: contour count; negative marks a composite glyph
 # x_min, y_min: lower-left corner of the glyph bounding box
@@ -50,7 +50,7 @@ pub rec GlyphInfo {
     y_max:        i16;
 }
 
-# Outline: the sizes an extracted simple glyph produced.
+# the sizes an extracted simple glyph produced
 # ---
 # num_contours: number of contours written to the ends buffer
 # num_points:   number of points written to the points buffer
@@ -59,7 +59,7 @@ pub rec Outline {
     num_points:   u16;
 }
 
-# read a glyph's header at goff.
+# read a glyph's header at goff
 # ---
 # data: pointer to the first byte of the file
 # len:  number of bytes addressable through data
@@ -77,7 +77,7 @@ pub fun glyph_header(data: *u8, len: usize, goff: usize, out: *GlyphInfo) bool {
     ret true;
 }
 
-# report whether a header denotes a composite glyph.
+# report whether a header denotes a composite glyph
 # ---
 # info: a glyph header
 # ret:  true when the glyph references component glyphs rather than storing contours
@@ -85,7 +85,7 @@ pub fun is_composite(info: *GlyphInfo) bool {
     ret info.num_contours < 0;
 }
 
-# read the point count of a simple glyph from its last contour end index.
+# read the point count of a simple glyph from its last contour end index
 #
 # the point count is one past the highest index in endPtsOfContours; a caller
 # sizes its point buffer from this before extracting.
@@ -105,7 +105,7 @@ pub fun point_count(data: *u8, len: usize, goff: usize, num_contours: i16, out: 
     ret true;
 }
 
-# extract a simple glyph's contours into caller-provided buffers.
+# extract a simple glyph's contours into caller-provided buffers
 #
 # writes each contour's inclusive end point index into ends and every point
 # (absolute coordinates, on/off-curve flag) into pts, filling out with the counts
@@ -241,7 +241,7 @@ fun w16(buf: *u8, off: usize, v: u16) {
 var glyph_buf: [64]u8;
 
 # build a triangle: on-curve points (100,100), (300,100), (200,400) in one contour,
-# exercising short +, short -, same-as-previous, and i16 coordinate deltas.
+# exercising short +, short -, same-as-previous, and i16 coordinate deltas
 fun build_triangle() {
     val p: *u8 = ?glyph_buf[0];
     w16(p, 0, 1);            # numberOfContours

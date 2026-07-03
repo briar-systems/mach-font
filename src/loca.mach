@@ -1,4 +1,4 @@
-# font.loca: the glyph location table.
+# the glyph location table
 #
 # `loca` stores numGlyphs+1 offsets into the `glyf` table; glyph g occupies the
 # byte range [loca[g], loca[g+1]) within glyf, and an empty range denotes a glyph
@@ -13,7 +13,7 @@ use std.types.bool.true;
 use std.types.bool.false;
 use std.types.size.usize;
 
-# read glyph g's byte range within the glyf table.
+# read glyph g's byte range within the glyf table
 #
 # both the g and g+1 offsets are read so the caller learns the glyph's start and
 # end; an equal pair denotes an empty glyph. the returned offsets are relative to

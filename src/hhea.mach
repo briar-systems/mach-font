@@ -1,4 +1,4 @@
-# font.hhea: the horizontal header table.
+# the horizontal header table
 #
 # `hhea` carries the shared vertical metrics used for line layout (ascent,
 # descent, line gap) and the count of long horizontal metrics in `hmtx`, which
@@ -11,7 +11,7 @@ use std.types.bool.true;
 use std.types.bool.false;
 use std.types.size.usize;
 
-# Hhea: the horizontal header fields a layout engine and hmtx need.
+# the horizontal header fields a layout engine and hmtx need
 # ---
 # ascent:            distance from baseline to the top of the design space
 # descent:           distance from baseline to the bottom (typically negative)
@@ -26,7 +26,7 @@ pub rec Hhea {
     num_h_metrics:     u16;
 }
 
-# parse the hhea table at off.
+# parse the hhea table at off
 # ---
 # data: pointer to the first byte of the file
 # len:  number of bytes addressable through data

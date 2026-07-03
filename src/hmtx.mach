@@ -1,4 +1,4 @@
-# font.hmtx: per-glyph horizontal metrics.
+# per-glyph horizontal metrics
 #
 # `hmtx` stores an array of (advanceWidth, leftSideBearing) pairs for the first
 # numberOfHMetrics glyphs, followed by left-side bearings alone for the rest. the
@@ -12,7 +12,7 @@ use std.types.bool.true;
 use std.types.bool.false;
 use std.types.size.usize;
 
-# read a glyph's advance width and left-side bearing from hmtx.
+# read a glyph's advance width and left-side bearing from hmtx
 #
 # for a glyph index below num_h_metrics the pair is read directly; for a higher
 # index the advance is the last long metric's advance and only the bearing is read
@@ -51,7 +51,7 @@ fun w16(buf: *u8, off: usize, v: u16) {
     buf[off + 1] = (v & 0xFF)::u8;
 }
 
-# 2 long metrics then 2 trailing bearings, for a 4-glyph font.
+# 2 long metrics then 2 trailing bearings, for a 4-glyph font
 var hmtx_buf: [12]u8;
 
 fun build_hmtx() {

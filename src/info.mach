@@ -1,4 +1,4 @@
-# font.info: the parsed-font facade.
+# the parsed-font facade
 #
 # `Font` is the prepared handle the rest of the api takes: it holds the file
 # bytes, the located byte offsets of the tables a rasterizer needs, and the few
@@ -23,7 +23,7 @@ use std.types.bool.true;
 use std.types.bool.false;
 use std.types.size.usize;
 
-# Font: a prepared truetype font handle.
+# a prepared truetype font handle
 # ---
 # data:                pointer to the first byte of the font file
 # len:                 number of bytes addressable through data
@@ -60,14 +60,14 @@ pub rec Font {
     descent:             i16;
 }
 
-# locate a table and return its byte offset, or 0 when absent.
+# locate a table and return its byte offset, or 0 when absent
 fun locate(data: *u8, len: usize, a: u8, b: u8, c: u8, d: u8) usize {
     var t: table.Table;
     if (!table.find_table(data, len, a, b, c, d, ?t)) { ret 0; }
     ret t.offset::usize;
 }
 
-# prepare a font handle over an in-memory font file.
+# prepare a font handle over an in-memory font file
 #
 # validates the sfnt version, locates the standard tables, and reads the global
 # scalars from head, maxp, and hhea. head and maxp are required; hhea, hmtx, loca,
@@ -129,7 +129,7 @@ pub fun init(data: *u8, len: usize, out: *Font) bool {
     ret true;
 }
 
-# read a glyph's advance width and left-side bearing.
+# read a glyph's advance width and left-side bearing
 #
 # a convenience over font.hmtx using the handle's cached hmtx offset and metric
 # counts. reports failure when the font has no hmtx table or the glyph is out of
@@ -145,7 +145,7 @@ pub fun glyph_hmetrics(f: *Font, glyph: u16, out_advance: *u16, out_lsb: *i16) b
     ret hmtx.metrics(f.data, f.len, f.hmtx_off, f.num_h_metrics, f.num_glyphs, glyph, out_advance, out_lsb);
 }
 
-# map a unicode codepoint to a glyph index through the selected cmap subtable.
+# map a unicode codepoint to a glyph index through the selected cmap subtable
 #
 # a convenience over font.cmap using the handle's selected subtable. an unmapped
 # codepoint yields glyph 0. reports failure when the font has no usable cmap
@@ -160,7 +160,7 @@ pub fun glyph_index(f: *Font, codepoint: u32, out: *u16) bool {
     ret cmap.lookup(f.data, f.len, f.cmap_sub, codepoint, out);
 }
 
-# extract a glyph's outline into caller-provided buffers.
+# extract a glyph's outline into caller-provided buffers
 #
 # resolves the glyph's data range through loca, then extracts its simple-glyph
 # contours through glyf. an empty glyph (no outline, e.g. a space) succeeds with
@@ -192,7 +192,7 @@ pub fun glyph_outline(f: *Font, glyph: u16, pts: *glyf.Point, pts_cap: usize, en
     ret glyf.extract_simple(f.data, f.len, goff, pts, pts_cap, ends, ends_cap, out);
 }
 
-# compute the scale that maps the font's design space to a target pixel height.
+# compute the scale that maps the font's design space to a target pixel height
 #
 # the height spans the font's ascent-to-descent range, matching the common
 # em-box-to-pixels convention. returns 0 when the font lacks usable vertical
@@ -207,7 +207,7 @@ pub fun scale_for_pixel_height(f: *Font, pixels: f32) f32 {
     ret pixels / span::f32;
 }
 
-# render a glyph into an 8-bit coverage bitmap at the given scale.
+# render a glyph into an 8-bit coverage bitmap at the given scale
 #
 # extracts the glyph outline, flattens its curves, and fills the bitmap with the
 # glyph placed against its own bounding box: the glyph's lower-left corner maps to
@@ -251,7 +251,7 @@ pub fun render_glyph(f: *Font, glyph: u16, scale: f32, pts: *glyf.Point, pts_cap
     ret true;
 }
 
-# read a glyph's header through the handle's loca and glyf tables.
+# read a glyph's header through the handle's loca and glyf tables
 fun glyph_header_of(f: *Font, glyph: u16, out: *glyf.GlyphInfo) bool {
     var start: u32 = 0;
     var end:   u32 = 0;
@@ -259,7 +259,7 @@ fun glyph_header_of(f: *Font, glyph: u16, out: *glyf.GlyphInfo) bool {
     ret glyf.glyph_header(f.data, f.len, f.glyf_off + start::usize, out);
 }
 
-# write zero coverage across the whole bitmap.
+# write zero coverage across the whole bitmap
 fun clear_bitmap(bitmap: *u8, width: u16, height: u16) {
     val n: usize = width::usize * height::usize;
     var i: usize = 0;
