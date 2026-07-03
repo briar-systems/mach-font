@@ -8,6 +8,11 @@
 
 use font.read;
 use font.table;
+use font.head;
+use font.maxp;
+use font.hhea;
+use font.hmtx;
+use font.info;
 # links the startup entrypoint so `mach test` over this library produces a binary.
 use std.runtime;
 
@@ -21,3 +26,14 @@ fwd table.Table;
 fwd table.is_truetype;
 fwd table.num_tables;
 fwd table.find_table;
+
+fwd head.Head;
+fwd head.parse_head;
+fwd maxp.num_glyphs;
+fwd hhea.Hhea;
+fwd hhea.parse_hhea;
+fwd hmtx.metrics;
+
+fwd info.Font;
+fwd info.init;
+fwd info.glyph_hmetrics;

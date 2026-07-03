@@ -1,0 +1,45 @@
+# font.maxp: the maximum profile table.
+#
+# `maxp` states the glyph count, which bounds every glyph index and sizes the
+# `loca` array. only the glyph count is needed here; the version 1.0 storage
+# maxima that follow it drive memory sizing in a hinting engine, which is out of
+# scope. the read is bounds-checked through font.read.
+
+use font.read;
+use std.types.bool.bool;
+use std.types.size.usize;
+
+# read the glyph count from the maxp table at off.
+#
+# numGlyphs sits at a fixed offset in both the 0.5 and 1.0 table versions, so no
+# version dispatch is needed to reach it.
+# ---
+# data: pointer to the first byte of the file
+# len:  number of bytes addressable through data
+# off:  byte offset of the maxp table
+# out:  receives the glyph count on success
+# ret:  true when the count field lies within len, false otherwise
+pub fun num_glyphs(data: *u8, len: usize, off: usize, out: *u16) bool {
+    ret read.read_u16(data, len, off + 4, out);
+}
+
+var maxp_buf: [6]u8;
+
+test "maxp: glyph count" {
+    maxp_buf[0] = 0x00;
+    maxp_buf[1] = 0x01;
+    maxp_buf[2] = 0x00;
+    maxp_buf[3] = 0x00;   # version 1.0
+    maxp_buf[4] = 0x01;
+    maxp_buf[5] = 0x2C;   # numGlyphs = 300
+    var n: u16 = 0;
+    if (!num_glyphs(?maxp_buf[0], 6, 0, ?n)) { ret 1; }
+    if (n != 300) { ret 1; }
+    ret 0;
+}
+
+test "maxp: truncated rejected" {
+    var n: u16 = 0;
+    if (num_glyphs(?maxp_buf[0], 5, 0, ?n)) { ret 1; }
+    ret 0;
+}

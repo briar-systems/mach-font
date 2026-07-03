@@ -1,0 +1,221 @@
+# font.info: the parsed-font facade.
+#
+# `Font` is the prepared handle the rest of the api takes: it holds the file
+# bytes, the located byte offsets of the tables a rasterizer needs, and the few
+# global scalars (glyph count, units per em, loca format, long-metric count) that
+# the table parsers require. `init` validates the sfnt header, locates the
+# standard tables, and reads those scalars once. absent optional tables are
+# recorded as offset 0, which never collides with a real table since the offset
+# table occupies the first bytes of the file.
+
+use font.read;
+use font.table;
+use font.head;
+use font.maxp;
+use font.hhea;
+use font.hmtx;
+use std.types.bool.bool;
+use std.types.bool.true;
+use std.types.bool.false;
+use std.types.size.usize;
+
+# Font: a prepared truetype font handle.
+# ---
+# data:                pointer to the first byte of the font file
+# len:                 number of bytes addressable through data
+# head_off:            byte offset of the head table (0 if absent)
+# maxp_off:            byte offset of the maxp table (0 if absent)
+# hhea_off:            byte offset of the hhea table (0 if absent)
+# hmtx_off:            byte offset of the hmtx table (0 if absent)
+# loca_off:            byte offset of the loca table (0 if absent)
+# glyf_off:            byte offset of the glyf table (0 if absent)
+# cmap_off:            byte offset of the cmap table (0 if absent)
+# cmap_sub:            byte offset of the selected cmap subtable (0 if none)
+# num_glyphs:          glyph count from maxp
+# units_per_em:        design units per em from head
+# index_to_loc_format: loca offset encoding from head (0 short, 1 long)
+# num_h_metrics:       long horizontal metric count from hhea
+pub rec Font {
+    data:                *u8;
+    len:                 usize;
+    head_off:            usize;
+    maxp_off:            usize;
+    hhea_off:            usize;
+    hmtx_off:            usize;
+    loca_off:            usize;
+    glyf_off:            usize;
+    cmap_off:            usize;
+    cmap_sub:            usize;
+    num_glyphs:          u16;
+    units_per_em:        u16;
+    index_to_loc_format: i16;
+    num_h_metrics:       u16;
+}
+
+# locate a table and return its byte offset, or 0 when absent.
+fun locate(data: *u8, len: usize, a: u8, b: u8, c: u8, d: u8) usize {
+    var t: table.Table;
+    if (!table.find_table(data, len, a, b, c, d, ?t)) { ret 0; }
+    ret t.offset::usize;
+}
+
+# prepare a font handle over an in-memory font file.
+#
+# validates the sfnt version, locates the standard tables, and reads the global
+# scalars from head, maxp, and hhea. head and maxp are required; hhea, hmtx, loca,
+# glyf, and cmap are optional and recorded as offset 0 when absent. selecting a
+# cmap subtable is deferred to font.cmap. reports failure on a non-truetype file,
+# a missing head or maxp, or a malformed head.
+# ---
+# data: pointer to the first byte of the font file
+# len:  number of bytes addressable through data
+# out:  receives the prepared handle on success
+# ret:  true when the font is a truetype file with a valid head and a maxp
+pub fun init(data: *u8, len: usize, out: *Font) bool {
+    if (!table.is_truetype(data, len)) { ret false; }
+
+    var f: Font;
+    f.data = data;
+    f.len  = len;
+
+    f.head_off = locate(data, len, 'h', 'e', 'a', 'd');
+    f.maxp_off = locate(data, len, 'm', 'a', 'x', 'p');
+    f.hhea_off = locate(data, len, 'h', 'h', 'e', 'a');
+    f.hmtx_off = locate(data, len, 'h', 'm', 't', 'x');
+    f.loca_off = locate(data, len, 'l', 'o', 'c', 'a');
+    f.glyf_off = locate(data, len, 'g', 'l', 'y', 'f');
+    f.cmap_off = locate(data, len, 'c', 'm', 'a', 'p');
+    f.cmap_sub = 0;
+
+    if (f.head_off == 0) { ret false; }
+    if (f.maxp_off == 0) { ret false; }
+
+    var h: head.Head;
+    if (!head.parse_head(data, len, f.head_off, ?h)) { ret false; }
+    f.units_per_em        = h.units_per_em;
+    f.index_to_loc_format = h.index_to_loc_format;
+
+    if (!maxp.num_glyphs(data, len, f.maxp_off, ?f.num_glyphs)) { ret false; }
+
+    f.num_h_metrics = 0;
+    if (f.hhea_off != 0) {
+        var hh: hhea.Hhea;
+        if (!hhea.parse_hhea(data, len, f.hhea_off, ?hh)) { ret false; }
+        f.num_h_metrics = hh.num_h_metrics;
+    }
+
+    out[0] = f;
+    ret true;
+}
+
+# read a glyph's advance width and left-side bearing.
+#
+# a convenience over font.hmtx using the handle's cached hmtx offset and metric
+# counts. reports failure when the font has no hmtx table or the glyph is out of
+# range.
+# ---
+# f:           prepared font handle
+# glyph:       glyph index to resolve
+# out_advance: receives the advance width in font units
+# out_lsb:     receives the left-side bearing in font units
+# ret:         true on success, false when hmtx is absent or the glyph is invalid
+pub fun glyph_hmetrics(f: *Font, glyph: u16, out_advance: *u16, out_lsb: *i16) bool {
+    if (f.hmtx_off == 0) { ret false; }
+    ret hmtx.metrics(f.data, f.len, f.hmtx_off, f.num_h_metrics, f.num_glyphs, glyph, out_advance, out_lsb);
+}
+
+fun w16(buf: *u8, off: usize, v: u16) {
+    buf[off]     = (v >> 8)::u8;
+    buf[off + 1] = (v & 0xFF)::u8;
+}
+
+fun w32(buf: *u8, off: usize, v: u32) {
+    buf[off]     = (v >> 24)::u8;
+    buf[off + 1] = ((v >> 16) & 0xFF)::u8;
+    buf[off + 2] = ((v >> 8) & 0xFF)::u8;
+    buf[off + 3] = (v & 0xFF)::u8;
+}
+
+fun tag(buf: *u8, off: usize, a: u8, b: u8, c: u8, d: u8) {
+    buf[off]     = a;
+    buf[off + 1] = b;
+    buf[off + 2] = c;
+    buf[off + 3] = d;
+}
+
+# a four-table font: head, hhea, hmtx, maxp, no outlines.
+var font_buf: [200]u8;
+
+fun build_font() {
+    val p: *u8 = ?font_buf[0];
+
+    w32(p, 0, 0x00010000);   # sfnt version
+    w16(p, 4, 4);            # numTables
+    w16(p, 6, 0);
+    w16(p, 8, 0);
+    w16(p, 10, 0);
+
+    tag(p, 12, 'h', 'e', 'a', 'd'); w32(p, 20, 76);  w32(p, 24, 54);
+    tag(p, 28, 'h', 'h', 'e', 'a'); w32(p, 36, 136); w32(p, 40, 36);
+    tag(p, 44, 'h', 'm', 't', 'x'); w32(p, 52, 172); w32(p, 56, 12);
+    tag(p, 60, 'm', 'a', 'x', 'p'); w32(p, 68, 130); w32(p, 72, 6);
+
+    # head @76
+    font_buf[76 + 12] = 0x5F;
+    font_buf[76 + 13] = 0x0F;
+    font_buf[76 + 14] = 0x3C;
+    font_buf[76 + 15] = 0xF5;
+    w16(p, 76 + 18, 1000);      # units_per_em
+    w16(p, 76 + 50, 0);         # index_to_loc_format = short
+
+    # maxp @130
+    w32(p, 130, 0x00010000);
+    w16(p, 130 + 4, 4);         # numGlyphs
+
+    # hhea @136
+    w16(p, 136 + 4, 800);       # ascent
+    w16(p, 136 + 6, 0xFF38);    # descent = -200
+    w16(p, 136 + 34, 2);        # num_h_metrics
+
+    # hmtx @172: 2 long metrics + 2 bearings
+    w16(p, 172 + 0, 600);       # glyph 0 advance
+    w16(p, 172 + 2, 40);        # glyph 0 lsb
+    w16(p, 172 + 4, 650);       # glyph 1 advance
+    w16(p, 172 + 6, 55);        # glyph 1 lsb
+    w16(p, 172 + 8, 60);        # glyph 2 lsb
+    w16(p, 172 + 10, 70);       # glyph 3 lsb
+}
+
+test "info: init reads globals and locates tables" {
+    build_font();
+    var f: Font;
+    if (!init(?font_buf[0], 200, ?f)) { ret 1; }
+    if (f.units_per_em != 1000) { ret 1; }
+    if (f.index_to_loc_format != 0) { ret 1; }
+    if (f.num_glyphs != 4) { ret 1; }
+    if (f.num_h_metrics != 2) { ret 1; }
+    if (f.head_off != 76) { ret 1; }
+    if (f.hmtx_off != 172) { ret 1; }
+    if (f.glyf_off != 0) { ret 1; }   # absent table recorded as 0
+    ret 0;
+}
+
+test "info: glyph_hmetrics via facade" {
+    build_font();
+    var f: Font;
+    if (!init(?font_buf[0], 200, ?f)) { ret 1; }
+    var adv: u16 = 0;
+    var lsb: i16 = 0;
+    if (!glyph_hmetrics(?f, 3, ?adv, ?lsb)) { ret 1; }
+    if (adv != 650) { ret 1; }   # trailing glyph shares last advance
+    if (lsb != 70) { ret 1; }
+    ret 0;
+}
+
+test "info: non-truetype rejected" {
+    build_font();
+    w32(?font_buf[0], 0, 0x4F54544F);   # OTTO
+    var f: Font;
+    if (init(?font_buf[0], 200, ?f)) { ret 1; }
+    ret 0;
+}

@@ -1,0 +1,111 @@
+# font.head: the font header table.
+#
+# `head` carries the design grid size (unitsPerEm), the glyph bounding box, and
+# the flag that selects the `loca` offset encoding (short vs long). the table
+# opens with a fixed magic number, which this module validates to reject a
+# mislocated or corrupt table. all reads are bounds-checked through font.read.
+
+use font.read;
+use std.types.bool.bool;
+use std.types.bool.true;
+use std.types.bool.false;
+use std.types.size.usize;
+
+# magic number stored at head+12 in every valid font header.
+val MAGIC: u32 = 0x5F0F3CF5;
+
+# Head: the fields of the font header a rasterizer needs.
+# ---
+# units_per_em:        design units per em; the scale denominator for pixel sizing
+# index_to_loc_format: 0 selects short `loca` offsets, 1 selects long
+# x_min, y_min:        lower-left corner of the union of all glyph bounding boxes
+# x_max, y_max:        upper-right corner of that union
+# mac_style:           style bits (bit 0 bold, bit 1 italic)
+pub rec Head {
+    units_per_em:        u16;
+    index_to_loc_format: i16;
+    x_min:               i16;
+    y_min:               i16;
+    x_max:               i16;
+    y_max:               i16;
+    mac_style:           u16;
+}
+
+# parse the head table at off.
+#
+# validates the magic number before reading the remaining fields; a mismatch or
+# any out-of-range read reports failure.
+# ---
+# data: pointer to the first byte of the file
+# len:  number of bytes addressable through data
+# off:  byte offset of the head table
+# out:  receives the parsed header on success
+# ret:  true when the magic matches and every field lies within len
+pub fun parse_head(data: *u8, len: usize, off: usize, out: *Head) bool {
+    var magic: u32 = 0;
+    if (!read.read_u32(data, len, off + 12, ?magic)) { ret false; }
+    if (magic != MAGIC) { ret false; }
+
+    var h: Head;
+    if (!read.read_u16(data, len, off + 18, ?h.units_per_em)) { ret false; }
+    if (!read.read_i16(data, len, off + 36, ?h.x_min)) { ret false; }
+    if (!read.read_i16(data, len, off + 38, ?h.y_min)) { ret false; }
+    if (!read.read_i16(data, len, off + 40, ?h.x_max)) { ret false; }
+    if (!read.read_i16(data, len, off + 42, ?h.y_max)) { ret false; }
+    if (!read.read_u16(data, len, off + 44, ?h.mac_style)) { ret false; }
+    if (!read.read_i16(data, len, off + 50, ?h.index_to_loc_format)) { ret false; }
+
+    out[0] = h;
+    ret true;
+}
+
+fun w16(buf: *u8, off: usize, v: u16) {
+    buf[off]     = (v >> 8)::u8;
+    buf[off + 1] = (v & 0xFF)::u8;
+}
+
+var head_buf: [54]u8;
+
+fun build_head() {
+    # magic at +12
+    head_buf[12] = 0x5F;
+    head_buf[13] = 0x0F;
+    head_buf[14] = 0x3C;
+    head_buf[15] = 0xF5;
+    w16(?head_buf[0], 18, 2048);      # units_per_em
+    w16(?head_buf[0], 36, 0xFFF0);    # x_min = -16
+    w16(?head_buf[0], 38, 0xFF9C);    # y_min = -100
+    w16(?head_buf[0], 40, 500);       # x_max
+    w16(?head_buf[0], 42, 700);       # y_max
+    w16(?head_buf[0], 44, 1);         # mac_style bold
+    w16(?head_buf[0], 50, 1);         # index_to_loc_format = long
+}
+
+test "head: parse fields" {
+    build_head();
+    var h: Head;
+    if (!parse_head(?head_buf[0], 54, 0, ?h)) { ret 1; }
+    if (h.units_per_em != 2048) { ret 1; }
+    if (h.index_to_loc_format != 1) { ret 1; }
+    if (h.x_min != -16) { ret 1; }
+    if (h.y_min != -100) { ret 1; }
+    if (h.x_max != 500) { ret 1; }
+    if (h.y_max != 700) { ret 1; }
+    if (h.mac_style != 1) { ret 1; }
+    ret 0;
+}
+
+test "head: bad magic rejected" {
+    build_head();
+    head_buf[12] = 0;
+    var h: Head;
+    if (parse_head(?head_buf[0], 54, 0, ?h)) { ret 1; }
+    ret 0;
+}
+
+test "head: truncated rejected" {
+    build_head();
+    var h: Head;
+    if (parse_head(?head_buf[0], 40, 0, ?h)) { ret 1; }
+    ret 0;
+}
