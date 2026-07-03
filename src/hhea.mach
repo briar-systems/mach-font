@@ -1,0 +1,74 @@
+# font.hhea: the horizontal header table.
+#
+# `hhea` carries the shared vertical metrics used for line layout (ascent,
+# descent, line gap) and the count of long horizontal metrics in `hmtx`, which
+# `font.hmtx` needs to resolve a glyph's advance. all reads are bounds-checked
+# through font.read.
+
+use font.read;
+use std.types.bool.bool;
+use std.types.bool.true;
+use std.types.bool.false;
+use std.types.size.usize;
+
+# Hhea: the horizontal header fields a layout engine and hmtx need.
+# ---
+# ascent:            distance from baseline to the top of the design space
+# descent:           distance from baseline to the bottom (typically negative)
+# line_gap:          recommended additional spacing between lines
+# advance_width_max: the widest advance in the font
+# num_h_metrics:     count of long horizontal metrics in the hmtx table
+pub rec Hhea {
+    ascent:            i16;
+    descent:           i16;
+    line_gap:          i16;
+    advance_width_max: u16;
+    num_h_metrics:     u16;
+}
+
+# parse the hhea table at off.
+# ---
+# data: pointer to the first byte of the file
+# len:  number of bytes addressable through data
+# off:  byte offset of the hhea table
+# out:  receives the parsed header on success
+# ret:  true when every field lies within len, false otherwise
+pub fun parse_hhea(data: *u8, len: usize, off: usize, out: *Hhea) bool {
+    var h: Hhea;
+    if (!read.read_i16(data, len, off + 4, ?h.ascent)) { ret false; }
+    if (!read.read_i16(data, len, off + 6, ?h.descent)) { ret false; }
+    if (!read.read_i16(data, len, off + 8, ?h.line_gap)) { ret false; }
+    if (!read.read_u16(data, len, off + 10, ?h.advance_width_max)) { ret false; }
+    if (!read.read_u16(data, len, off + 34, ?h.num_h_metrics)) { ret false; }
+    out[0] = h;
+    ret true;
+}
+
+fun w16(buf: *u8, off: usize, v: u16) {
+    buf[off]     = (v >> 8)::u8;
+    buf[off + 1] = (v & 0xFF)::u8;
+}
+
+var hhea_buf: [36]u8;
+
+test "hhea: parse fields" {
+    w16(?hhea_buf[0], 4, 0x0708);     # ascent = 1800
+    w16(?hhea_buf[0], 6, 0xFE0C);     # descent = -500
+    w16(?hhea_buf[0], 8, 90);         # line_gap
+    w16(?hhea_buf[0], 10, 2100);      # advance_width_max
+    w16(?hhea_buf[0], 34, 42);        # num_h_metrics
+    var h: Hhea;
+    if (!parse_hhea(?hhea_buf[0], 36, 0, ?h)) { ret 1; }
+    if (h.ascent != 1800) { ret 1; }
+    if (h.descent != -500) { ret 1; }
+    if (h.line_gap != 90) { ret 1; }
+    if (h.advance_width_max != 2100) { ret 1; }
+    if (h.num_h_metrics != 42) { ret 1; }
+    ret 0;
+}
+
+test "hhea: truncated rejected" {
+    var h: Hhea;
+    if (parse_hhea(?hhea_buf[0], 34, 0, ?h)) { ret 1; }
+    ret 0;
+}

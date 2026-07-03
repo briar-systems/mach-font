@@ -1,0 +1,466 @@
+# font.info: the parsed-font facade.
+#
+# `Font` is the prepared handle the rest of the api takes: it holds the file
+# bytes, the located byte offsets of the tables a rasterizer needs, and the few
+# global scalars (glyph count, units per em, loca format, long-metric count) that
+# the table parsers require. `init` validates the sfnt header, locates the
+# standard tables, and reads those scalars once. absent optional tables are
+# recorded as offset 0, which never collides with a real table since the offset
+# table occupies the first bytes of the file.
+
+use font.read;
+use font.table;
+use font.head;
+use font.maxp;
+use font.hhea;
+use font.hmtx;
+use font.cmap;
+use font.loca;
+use font.glyf;
+use font.raster;
+use std.types.bool.bool;
+use std.types.bool.true;
+use std.types.bool.false;
+use std.types.size.usize;
+
+# Font: a prepared truetype font handle.
+# ---
+# data:                pointer to the first byte of the font file
+# len:                 number of bytes addressable through data
+# head_off:            byte offset of the head table (0 if absent)
+# maxp_off:            byte offset of the maxp table (0 if absent)
+# hhea_off:            byte offset of the hhea table (0 if absent)
+# hmtx_off:            byte offset of the hmtx table (0 if absent)
+# loca_off:            byte offset of the loca table (0 if absent)
+# glyf_off:            byte offset of the glyf table (0 if absent)
+# cmap_off:            byte offset of the cmap table (0 if absent)
+# cmap_sub:            byte offset of the selected cmap subtable (0 if none)
+# num_glyphs:          glyph count from maxp
+# units_per_em:        design units per em from head
+# index_to_loc_format: loca offset encoding from head (0 short, 1 long)
+# num_h_metrics:       long horizontal metric count from hhea
+# ascent:              baseline-to-top distance from hhea (0 if absent)
+# descent:             baseline-to-bottom distance from hhea, typically negative
+pub rec Font {
+    data:                *u8;
+    len:                 usize;
+    head_off:            usize;
+    maxp_off:            usize;
+    hhea_off:            usize;
+    hmtx_off:            usize;
+    loca_off:            usize;
+    glyf_off:            usize;
+    cmap_off:            usize;
+    cmap_sub:            usize;
+    num_glyphs:          u16;
+    units_per_em:        u16;
+    index_to_loc_format: i16;
+    num_h_metrics:       u16;
+    ascent:              i16;
+    descent:             i16;
+}
+
+# locate a table and return its byte offset, or 0 when absent.
+fun locate(data: *u8, len: usize, a: u8, b: u8, c: u8, d: u8) usize {
+    var t: table.Table;
+    if (!table.find_table(data, len, a, b, c, d, ?t)) { ret 0; }
+    ret t.offset::usize;
+}
+
+# prepare a font handle over an in-memory font file.
+#
+# validates the sfnt version, locates the standard tables, and reads the global
+# scalars from head, maxp, and hhea. head and maxp are required; hhea, hmtx, loca,
+# glyf, and cmap are optional and recorded as offset 0 when absent. selecting a
+# cmap subtable is deferred to font.cmap. reports failure on a non-truetype file,
+# a missing head or maxp, or a malformed head.
+# ---
+# data: pointer to the first byte of the font file
+# len:  number of bytes addressable through data
+# out:  receives the prepared handle on success
+# ret:  true when the font is a truetype file with a valid head and a maxp
+pub fun init(data: *u8, len: usize, out: *Font) bool {
+    if (!table.is_truetype(data, len)) { ret false; }
+
+    var f: Font;
+    f.data = data;
+    f.len  = len;
+
+    f.head_off = locate(data, len, 'h', 'e', 'a', 'd');
+    f.maxp_off = locate(data, len, 'm', 'a', 'x', 'p');
+    f.hhea_off = locate(data, len, 'h', 'h', 'e', 'a');
+    f.hmtx_off = locate(data, len, 'h', 'm', 't', 'x');
+    f.loca_off = locate(data, len, 'l', 'o', 'c', 'a');
+    f.glyf_off = locate(data, len, 'g', 'l', 'y', 'f');
+    f.cmap_off = locate(data, len, 'c', 'm', 'a', 'p');
+    f.cmap_sub = 0;
+
+    if (f.head_off == 0) { ret false; }
+    if (f.maxp_off == 0) { ret false; }
+
+    var h: head.Head;
+    if (!head.parse_head(data, len, f.head_off, ?h)) { ret false; }
+    f.units_per_em        = h.units_per_em;
+    f.index_to_loc_format = h.index_to_loc_format;
+
+    if (!maxp.num_glyphs(data, len, f.maxp_off, ?f.num_glyphs)) { ret false; }
+
+    f.num_h_metrics = 0;
+    f.ascent        = 0;
+    f.descent       = 0;
+    if (f.hhea_off != 0) {
+        var hh: hhea.Hhea;
+        if (!hhea.parse_hhea(data, len, f.hhea_off, ?hh)) { ret false; }
+        f.num_h_metrics = hh.num_h_metrics;
+        f.ascent        = hh.ascent;
+        f.descent       = hh.descent;
+    }
+
+    # an unusable or absent cmap leaves cmap_sub at 0; character mapping is then
+    # unavailable but the font is still valid for index-addressed glyph access.
+    if (f.cmap_off != 0) {
+        var sub: usize = 0;
+        if (cmap.select_subtable(data, len, f.cmap_off, ?sub)) {
+            f.cmap_sub = sub;
+        }
+    }
+
+    out[0] = f;
+    ret true;
+}
+
+# read a glyph's advance width and left-side bearing.
+#
+# a convenience over font.hmtx using the handle's cached hmtx offset and metric
+# counts. reports failure when the font has no hmtx table or the glyph is out of
+# range.
+# ---
+# f:           prepared font handle
+# glyph:       glyph index to resolve
+# out_advance: receives the advance width in font units
+# out_lsb:     receives the left-side bearing in font units
+# ret:         true on success, false when hmtx is absent or the glyph is invalid
+pub fun glyph_hmetrics(f: *Font, glyph: u16, out_advance: *u16, out_lsb: *i16) bool {
+    if (f.hmtx_off == 0) { ret false; }
+    ret hmtx.metrics(f.data, f.len, f.hmtx_off, f.num_h_metrics, f.num_glyphs, glyph, out_advance, out_lsb);
+}
+
+# map a unicode codepoint to a glyph index through the selected cmap subtable.
+#
+# a convenience over font.cmap using the handle's selected subtable. an unmapped
+# codepoint yields glyph 0. reports failure when the font has no usable cmap
+# subtable or the subtable is malformed.
+# ---
+# f:         prepared font handle
+# codepoint: the unicode codepoint to map
+# out:       receives the glyph index (0 when unmapped) on success
+# ret:       true on a successful lookup, false when no cmap is available
+pub fun glyph_index(f: *Font, codepoint: u32, out: *u16) bool {
+    if (f.cmap_sub == 0) { ret false; }
+    ret cmap.lookup(f.data, f.len, f.cmap_sub, codepoint, out);
+}
+
+# extract a glyph's outline into caller-provided buffers.
+#
+# resolves the glyph's data range through loca, then extracts its simple-glyph
+# contours through glyf. an empty glyph (no outline, e.g. a space) succeeds with
+# zero counts. reports failure when loca or glyf is absent, the glyph is out of
+# range or composite, or a buffer is too small.
+# ---
+# f:        prepared font handle
+# glyph:    glyph index to extract
+# pts:      buffer receiving the extracted points
+# pts_cap:  capacity of pts in points
+# ends:     buffer receiving each contour's end point index
+# ends_cap: capacity of ends in entries
+# out:      receives the written contour and point counts
+# ret:      true on a fully extracted (possibly empty) glyph, false otherwise
+pub fun glyph_outline(f: *Font, glyph: u16, pts: *glyf.Point, pts_cap: usize, ends: *u16, ends_cap: usize, out: *glyf.Outline) bool {
+    if (f.loca_off == 0 || f.glyf_off == 0) { ret false; }
+    if (glyph >= f.num_glyphs) { ret false; }
+
+    var start: u32 = 0;
+    var end:   u32 = 0;
+    if (!loca.glyph_range(f.data, f.len, f.loca_off, f.index_to_loc_format, glyph, ?start, ?end)) { ret false; }
+
+    if (start == end) {
+        out[0] = glyf.Outline{ num_contours: 0, num_points: 0 };
+        ret true;
+    }
+
+    val goff: usize = f.glyf_off + start::usize;
+    ret glyf.extract_simple(f.data, f.len, goff, pts, pts_cap, ends, ends_cap, out);
+}
+
+# compute the scale that maps the font's design space to a target pixel height.
+#
+# the height spans the font's ascent-to-descent range, matching the common
+# em-box-to-pixels convention. returns 0 when the font lacks usable vertical
+# metrics (an absent hhea).
+# ---
+# f:      prepared font handle
+# pixels: desired ascent-to-descent height in pixels
+# ret:    design-unit-to-pixel scale, or 0 when vertical metrics are unavailable
+pub fun scale_for_pixel_height(f: *Font, pixels: f32) f32 {
+    val span: i32 = f.ascent::i32 - f.descent::i32;
+    if (span <= 0) { ret 0.0; }
+    ret pixels / span::f32;
+}
+
+# render a glyph into an 8-bit coverage bitmap at the given scale.
+#
+# extracts the glyph outline, flattens its curves, and fills the bitmap with the
+# glyph placed against its own bounding box: the glyph's lower-left corner maps to
+# the bitmap's lower-left. every pixel is written, so the bitmap need not be
+# pre-cleared. an empty glyph clears the bitmap to zero. the caller sizes the
+# points, contour-ends, and edges scratch buffers. reports failure when loca or
+# glyf is absent, the glyph is out of range or composite, or a scratch buffer is
+# too small.
+# ---
+# f:         prepared font handle
+# glyph:     glyph index to render
+# scale:     design-unit-to-pixel scale, e.g. from scale_for_pixel_height
+# pts:       scratch buffer for extracted points
+# pts_cap:   capacity of pts
+# ends:      scratch buffer for contour end indices
+# ends_cap:  capacity of ends
+# edges:     scratch buffer for flattened edges
+# edges_cap: capacity of edges
+# bitmap:    row-major width*height output buffer
+# width:     bitmap width in pixels
+# height:    bitmap height in pixels
+# ret:       true on a fully rendered (possibly empty) glyph, false otherwise
+pub fun render_glyph(f: *Font, glyph: u16, scale: f32, pts: *glyf.Point, pts_cap: usize, ends: *u16, ends_cap: usize, edges: *raster.Edge, edges_cap: usize, bitmap: *u8, width: u16, height: u16) bool {
+    var o: glyf.Outline;
+    if (!glyph_outline(f, glyph, pts, pts_cap, ends, ends_cap, ?o)) { ret false; }
+
+    if (o.num_points == 0) {
+        clear_bitmap(bitmap, width, height);
+        ret true;
+    }
+
+    # place the glyph against its bounding box so its lower-left maps to the origin.
+    var info: glyf.GlyphInfo;
+    if (!glyph_header_of(f, glyph, ?info)) { ret false; }
+    val x_off: f32 = -(info.x_min::f32) * scale;
+    val y_off: f32 = -(info.y_min::f32) * scale;
+
+    var count: usize = 0;
+    if (!raster.flatten(pts, o.num_points, ends, o.num_contours, scale, x_off, y_off, height, edges, edges_cap, ?count)) { ret false; }
+    raster.fill(edges, count, bitmap, width, height);
+    ret true;
+}
+
+# read a glyph's header through the handle's loca and glyf tables.
+fun glyph_header_of(f: *Font, glyph: u16, out: *glyf.GlyphInfo) bool {
+    var start: u32 = 0;
+    var end:   u32 = 0;
+    if (!loca.glyph_range(f.data, f.len, f.loca_off, f.index_to_loc_format, glyph, ?start, ?end)) { ret false; }
+    ret glyf.glyph_header(f.data, f.len, f.glyf_off + start::usize, out);
+}
+
+# write zero coverage across the whole bitmap.
+fun clear_bitmap(bitmap: *u8, width: u16, height: u16) {
+    val n: usize = width::usize * height::usize;
+    var i: usize = 0;
+    for (i < n) {
+        bitmap[i] = 0;
+        i = i + 1;
+    }
+}
+
+fun w16(buf: *u8, off: usize, v: u16) {
+    buf[off]     = (v >> 8)::u8;
+    buf[off + 1] = (v & 0xFF)::u8;
+}
+
+fun w32(buf: *u8, off: usize, v: u32) {
+    buf[off]     = (v >> 24)::u8;
+    buf[off + 1] = ((v >> 16) & 0xFF)::u8;
+    buf[off + 2] = ((v >> 8) & 0xFF)::u8;
+    buf[off + 3] = (v & 0xFF)::u8;
+}
+
+fun tag(buf: *u8, off: usize, a: u8, b: u8, c: u8, d: u8) {
+    buf[off]     = a;
+    buf[off + 1] = b;
+    buf[off + 2] = c;
+    buf[off + 3] = d;
+}
+
+# a complete minimal font: head, maxp, hhea, hmtx, cmap, loca, glyf. two glyphs
+# (0 empty, 1 a triangle); the cmap maps 'A' to glyph 1. tables built by hand,
+# mirroring the parsers in reverse.
+var font_buf: [320]u8;
+
+fun build_font() {
+    val p: *u8 = ?font_buf[0];
+
+    w32(p, 0, 0x00010000);   # sfnt version
+    w16(p, 4, 7);            # numTables
+    w16(p, 6, 0);
+    w16(p, 8, 0);
+    w16(p, 10, 0);
+
+    # directory entries: tag, checksum (0), offset, length
+    tag(p, 12,  'c', 'm', 'a', 'p'); w32(p, 20,  228); w32(p, 24,  44);
+    tag(p, 28,  'g', 'l', 'y', 'f'); w32(p, 36,  278); w32(p, 40,  24);
+    tag(p, 44,  'h', 'e', 'a', 'd'); w32(p, 52,  124); w32(p, 56,  54);
+    tag(p, 60,  'h', 'h', 'e', 'a'); w32(p, 68,  184); w32(p, 72,  36);
+    tag(p, 76,  'h', 'm', 't', 'x'); w32(p, 84,  220); w32(p, 88,  8);
+    tag(p, 92,  'l', 'o', 'c', 'a'); w32(p, 100, 272); w32(p, 104, 6);
+    tag(p, 108, 'm', 'a', 'x', 'p'); w32(p, 116, 178); w32(p, 120, 6);
+
+    # head @124
+    font_buf[124 + 12] = 0x5F;
+    font_buf[124 + 13] = 0x0F;
+    font_buf[124 + 14] = 0x3C;
+    font_buf[124 + 15] = 0xF5;
+    w16(p, 124 + 18, 1000);      # units_per_em
+    w16(p, 124 + 50, 0);         # index_to_loc_format = short
+
+    # maxp @178
+    w32(p, 178, 0x00010000);
+    w16(p, 178 + 4, 2);          # numGlyphs
+
+    # hhea @184
+    w16(p, 184 + 4, 800);        # ascent
+    w16(p, 184 + 6, 0xFF38);     # descent = -200
+    w16(p, 184 + 34, 2);         # num_h_metrics
+
+    # hmtx @220: 2 long metrics
+    w16(p, 220 + 0, 500);        # glyph 0 advance
+    w16(p, 220 + 2, 0);          # glyph 0 lsb
+    w16(p, 220 + 4, 650);        # glyph 1 advance
+    w16(p, 220 + 6, 40);         # glyph 1 lsb
+
+    # cmap @228
+    w16(p, 228 + 0, 0);          # version
+    w16(p, 228 + 2, 1);          # numTables
+    w16(p, 228 + 4, 3);          # platformID = windows
+    w16(p, 228 + 6, 1);          # encodingID = BMP unicode
+    w32(p, 228 + 8, 12);         # subtable offset (relative to cmap)
+    # format 4 subtable @240: 'A' -> glyph 1
+    w16(p, 240 + 0, 4);          # format
+    w16(p, 240 + 2, 32);         # length
+    w16(p, 240 + 4, 0);          # language
+    w16(p, 240 + 6, 4);          # segCountX2 (2 segments)
+    w16(p, 254, 0x41);           # endCode[0]
+    w16(p, 256, 0xFFFF);         # endCode[1]
+    w16(p, 258, 0);              # reservedPad
+    w16(p, 260, 0x41);           # startCode[0]
+    w16(p, 262, 0xFFFF);         # startCode[1]
+    w16(p, 264, 0xFFC0);         # idDelta[0] = -64: 'A'(0x41) -> 1
+    w16(p, 266, 1);              # idDelta[1]
+    w16(p, 268, 0);              # idRangeOffset[0]
+    w16(p, 270, 0);              # idRangeOffset[1]
+
+    # loca @272: short offsets (halved). glyph 0 empty, glyph 1 = [0, 24)
+    w16(p, 272, 0);
+    w16(p, 274, 0);
+    w16(p, 276, 12);
+
+    # glyf @278: glyph 1 is a triangle (100,100), (300,100), (200,400)
+    w16(p, 278, 1);              # numberOfContours
+    w16(p, 280, 100);            # xMin
+    w16(p, 282, 100);            # yMin
+    w16(p, 284, 300);            # xMax
+    w16(p, 286, 400);            # yMax
+    w16(p, 288, 2);              # endPtsOfContours[0]
+    w16(p, 290, 0);              # instructionLength
+    font_buf[292] = 0x37;        # p0: on, x short +, y short +
+    font_buf[293] = 0x33;        # p1: on, x short +, y same
+    font_buf[294] = 0x03;        # p2: on, x short -, y i16
+    font_buf[295] = 100;         # p0 x = +100
+    font_buf[296] = 200;         # p1 x = +200
+    font_buf[297] = 100;         # p2 x = -100
+    font_buf[298] = 100;         # p0 y = +100
+    w16(p, 299, 300);            # p2 y = +300 (i16)
+}
+
+var e2e_pts: [8]glyf.Point;
+var e2e_ends: [4]u16;
+var e2e_edges: [64]raster.Edge;
+var e2e_bmp: [64]u8;
+
+test "info: init locates every table and reads globals" {
+    build_font();
+    var f: Font;
+    if (!init(?font_buf[0], 320, ?f)) { ret 1; }
+    if (f.units_per_em != 1000) { ret 1; }
+    if (f.index_to_loc_format != 0) { ret 1; }
+    if (f.num_glyphs != 2) { ret 1; }
+    if (f.num_h_metrics != 2) { ret 1; }
+    if (f.ascent != 800 || f.descent != -200) { ret 1; }
+    if (f.glyf_off != 278 || f.loca_off != 272) { ret 1; }
+    if (f.cmap_sub != 240) { ret 1; }
+    ret 0;
+}
+
+test "info: cmap maps 'A' to glyph 1" {
+    build_font();
+    var f: Font;
+    if (!init(?font_buf[0], 320, ?f)) { ret 1; }
+    var g: u16 = 0;
+    if (!glyph_index(?f, 0x41, ?g)) { ret 1; }
+    if (g != 1) { ret 1; }
+    # an unmapped codepoint resolves to glyph 0
+    if (!glyph_index(?f, 0x42, ?g)) { ret 1; }
+    if (g != 0) { ret 1; }
+    ret 0;
+}
+
+test "info: glyph_hmetrics via facade" {
+    build_font();
+    var f: Font;
+    if (!init(?font_buf[0], 320, ?f)) { ret 1; }
+    var adv: u16 = 0;
+    var lsb: i16 = 0;
+    if (!glyph_hmetrics(?f, 1, ?adv, ?lsb)) { ret 1; }
+    if (adv != 650 || lsb != 40) { ret 1; }
+    ret 0;
+}
+
+test "info: outline extraction end to end" {
+    build_font();
+    var f: Font;
+    if (!init(?font_buf[0], 320, ?f)) { ret 1; }
+    var o: glyf.Outline;
+    if (!glyph_outline(?f, 1, ?e2e_pts[0], 8, ?e2e_ends[0], 4, ?o)) { ret 1; }
+    if (o.num_contours != 1 || o.num_points != 3) { ret 1; }
+    if (e2e_pts[0].x != 100 || e2e_pts[0].y != 100) { ret 1; }
+    if (e2e_pts[1].x != 300 || e2e_pts[1].y != 100) { ret 1; }
+    if (e2e_pts[2].x != 200 || e2e_pts[2].y != 400) { ret 1; }
+    # glyph 0 is empty
+    if (!glyph_outline(?f, 0, ?e2e_pts[0], 8, ?e2e_ends[0], 4, ?o)) { ret 1; }
+    if (o.num_contours != 0 || o.num_points != 0) { ret 1; }
+    ret 0;
+}
+
+test "info: render glyph covers interior, leaves corner empty" {
+    build_font();
+    var f: Font;
+    if (!init(?font_buf[0], 320, ?f)) { ret 1; }
+    if (!render_glyph(?f, 1, 0.02, ?e2e_pts[0], 8, ?e2e_ends[0], 4, ?e2e_edges[0], 64, ?e2e_bmp[0], 8, 8)) { ret 1; }
+    # the triangle centroid maps near pixel (2, 6)
+    if (e2e_bmp[6 * 8 + 2] == 0) { ret 1; }
+    # a far corner stays empty
+    if (e2e_bmp[7] != 0) { ret 1; }
+    ret 0;
+}
+
+test "info: non-truetype rejected" {
+    build_font();
+    w32(?font_buf[0], 0, 0x4F54544F);   # OTTO
+    var f: Font;
+    if (init(?font_buf[0], 320, ?f)) { ret 1; }
+    ret 0;
+}
+
+test "info: truncated font rejected" {
+    build_font();
+    var f: Font;
+    # the directory claims 7 tables but only a few bytes are present
+    if (init(?font_buf[0], 20, ?f)) { ret 1; }
+    ret 0;
+}

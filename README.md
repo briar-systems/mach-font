@@ -58,15 +58,45 @@ is host-specific.
 
 ```
 src/
-  font.mach   library surface: re-exports the public api behind `use font;`
-  read.mach   bounds-checked big-endian reads over the font's bytes — the
-              shared foundation the table parsers and rasterizer build on
+  font.mach     library surface: re-exports the public api behind `use font;`
+  read.mach     bounds-checked big-endian reads — the shared foundation
+  table.mach    sfnt offset table + table directory lookup by tag
+  head.mach     font header: unitsPerEm, loca format, bounding box
+  maxp.mach     glyph count
+  hhea.mach     horizontal header: ascent, descent, long-metric count
+  hmtx.mach     per-glyph advance width and left-side bearing
+  cmap.mach     character-to-glyph mapping (format 4 and format 12)
+  loca.mach     glyph location table (short and long offsets)
+  glyf.mach     simple-glyph outline extraction (on/off-curve points)
+  raster.mach   outline flattening + coverage-bitmap fill
+  info.mach     the Font facade tying the tables together
 ```
 
-The reader is the first piece: font files are untrusted input, so every read
+The reader is the foundation: font files are untrusted input, so every read
 validates its span against the buffer before touching it and reports failure
-rather than reading out of bounds. Table parsers and the rasterizer land on top
-of it.
+rather than reading out of bounds. The table parsers and rasterizer are built on
+top of it and follow the same discipline — a truncated or malformed font is
+rejected cleanly.
+
+## Status
+
+The parsing core is complete: the table directory, global metrics
+(`head`/`maxp`/`hhea`/`hmtx`), character mapping (`cmap` formats 4 and 12), and
+simple-glyph outline extraction (`loca` + `glyf`). Rasterization flattens
+quadratic outlines and scan-fills an anti-aliased 8-bit coverage bitmap with the
+nonzero winding rule. The `Font` handle (`font.init`) locates the tables once and
+exposes `glyph_index`, `glyph_hmetrics`, `glyph_outline`, and `render_glyph`. All
+rasterization buffers are caller-provided, so the library allocates nothing.
+
+Known limitations of this pass:
+
+- **Composite glyphs are not extracted.** A glyph whose contour count is negative
+  references component glyphs with a transform; `font.is_composite` detects them
+  and outline extraction rejects them rather than resolving one level. Simple
+  glyphs (the common case) are fully supported.
+- **The fill is unoptimized.** Coverage is sampled on a supersampling subgrid
+  per pixel; correct and simple, but a sorted active-edge sweep would be faster
+  for large glyphs.
 
 ## Tests
 

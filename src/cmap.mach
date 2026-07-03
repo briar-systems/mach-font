@@ -1,0 +1,330 @@
+# font.cmap: character-to-glyph mapping.
+#
+# the cmap table holds one or more encoding subtables, each mapping character
+# codes to glyph indices under some platform encoding. this module selects a
+# unicode subtable and resolves a codepoint through it. format 4 (segmented BMP
+# coverage) is the near-universal encoding for the basic multilingual plane;
+# format 12 (segmented full coverage) extends past U+FFFF. an unmapped codepoint
+# resolves to glyph 0 (.notdef), the truetype convention for a missing glyph;
+# only a malformed or truncated subtable reports failure. all reads are
+# bounds-checked through font.read.
+
+use font.read;
+use std.types.bool.bool;
+use std.types.bool.true;
+use std.types.bool.false;
+use std.types.size.usize;
+
+# select a unicode cmap subtable and return its absolute byte offset.
+#
+# scans the encoding records and prefers full-repertoire unicode (format 12
+# candidates) over basic-multilingual-plane unicode, and either over a symbol
+# encoding. the returned offset is absolute (cmap table offset plus the record's
+# relative subtable offset).
+# ---
+# data:     pointer to the first byte of the file
+# len:      number of bytes addressable through data
+# cmap_off: byte offset of the cmap table
+# out:      receives the selected subtable's absolute byte offset on success
+# ret:      true when a usable unicode subtable is found, false otherwise
+pub fun select_subtable(data: *u8, len: usize, cmap_off: usize, out: *usize) bool {
+    var count: u16 = 0;
+    if (!read.read_u16(data, len, cmap_off + 2, ?count)) { ret false; }
+
+    var best_score: i32 = 0;
+    var best_off:   usize = 0;
+
+    var i: usize = 0;
+    for (i < count::usize) {
+        val rec: usize = cmap_off + 4 + i * 8;
+        var platform: u16 = 0;
+        var encoding: u16 = 0;
+        var sub_rel:  u32 = 0;
+        if (!read.read_u16(data, len, rec, ?platform)) { ret false; }
+        if (!read.read_u16(data, len, rec + 2, ?encoding)) { ret false; }
+        if (!read.read_u32(data, len, rec + 4, ?sub_rel)) { ret false; }
+
+        val score: i32 = encoding_score(platform, encoding);
+        if (score > best_score) {
+            best_score = score;
+            best_off   = cmap_off + sub_rel::usize;
+        }
+        i = i + 1;
+    }
+
+    if (best_score == 0) { ret false; }
+    out[0] = best_off;
+    ret true;
+}
+
+# rank a (platform, encoding) pair for unicode coverage; 0 means unusable.
+fun encoding_score(platform: u16, encoding: u16) i32 {
+    # windows full unicode (UCS-4)
+    if (platform == 3 && encoding == 10) { ret 4; }
+    # unicode platform, full repertoire
+    if (platform == 0 && (encoding == 4 || encoding == 6)) { ret 4; }
+    # windows BMP unicode
+    if (platform == 3 && encoding == 1) { ret 3; }
+    # unicode platform, BMP or earlier
+    if (platform == 0 && encoding <= 3) { ret 3; }
+    # windows symbol
+    if (platform == 3 && encoding == 0) { ret 2; }
+    ret 0;
+}
+
+# map a codepoint to a glyph index through a selected subtable.
+#
+# dispatches on the subtable format: 4 for segmented BMP coverage, 12 for
+# segmented full coverage. an unmapped codepoint yields glyph 0 with a true
+# return; an unsupported format or an out-of-range read yields false.
+# ---
+# data:      pointer to the first byte of the file
+# len:       number of bytes addressable through data
+# sub_off:   absolute byte offset of the cmap subtable
+# codepoint: the unicode codepoint to map
+# out:       receives the glyph index (0 when unmapped) on success
+# ret:       true when the subtable format is supported and its reads stay in range
+pub fun lookup(data: *u8, len: usize, sub_off: usize, codepoint: u32, out: *u16) bool {
+    var format: u16 = 0;
+    if (!read.read_u16(data, len, sub_off, ?format)) { ret false; }
+
+    if (format == 4)  { ret lookup_4(data, len, sub_off, codepoint, out); }
+    if (format == 12) { ret lookup_12(data, len, sub_off, codepoint, out); }
+    ret false;
+}
+
+# format 4: segmented coverage of the basic multilingual plane.
+fun lookup_4(data: *u8, len: usize, sub_off: usize, codepoint: u32, out: *u16) bool {
+    # format 4 covers only U+0000..U+FFFF; anything above is unmapped.
+    if (codepoint > 0xFFFF) { out[0] = 0; ret true; }
+    val c: u16 = codepoint::u16;
+
+    var seg_x2: u16 = 0;
+    if (!read.read_u16(data, len, sub_off + 6, ?seg_x2)) { ret false; }
+    val seg_count: usize = (seg_x2::usize) / 2;
+
+    val end_base:   usize = sub_off + 14;
+    val start_base: usize = end_base + seg_x2::usize + 2;
+    val delta_base: usize = start_base + seg_x2::usize;
+    val range_base: usize = delta_base + seg_x2::usize;
+
+    var i: usize = 0;
+    for (i < seg_count) {
+        var end_code: u16 = 0;
+        if (!read.read_u16(data, len, end_base + i * 2, ?end_code)) { ret false; }
+        if (c <= end_code) {
+            var start_code: u16 = 0;
+            if (!read.read_u16(data, len, start_base + i * 2, ?start_code)) { ret false; }
+            if (c < start_code) { out[0] = 0; ret true; }
+
+            var id_delta: i16 = 0;
+            if (!read.read_i16(data, len, delta_base + i * 2, ?id_delta)) { ret false; }
+            var range_off: u16 = 0;
+            val range_at: usize = range_base + i * 2;
+            if (!read.read_u16(data, len, range_at, ?range_off)) { ret false; }
+
+            # idDelta is added modulo 65536; reinterpret its bits as u16 so a
+            # negative delta contributes its two's-complement value to the sum.
+            if (range_off == 0) {
+                out[0] = (c::u32 + id_delta:~u16::u32)::u16;
+                ret true;
+            }
+
+            # idRangeOffset indexes forward from its own slot into glyphIdArray.
+            val glyph_at: usize = range_at + range_off::usize + (c - start_code)::usize * 2;
+            var raw: u16 = 0;
+            if (!read.read_u16(data, len, glyph_at, ?raw)) { ret false; }
+            if (raw == 0) { out[0] = 0; ret true; }
+            out[0] = (raw::u32 + id_delta:~u16::u32)::u16;
+            ret true;
+        }
+        i = i + 1;
+    }
+
+    out[0] = 0;
+    ret true;
+}
+
+fun w16(buf: *u8, off: usize, v: u16) {
+    buf[off]     = (v >> 8)::u8;
+    buf[off + 1] = (v & 0xFF)::u8;
+}
+
+fun w32(buf: *u8, off: usize, v: u32) {
+    buf[off]     = (v >> 24)::u8;
+    buf[off + 1] = ((v >> 16) & 0xFF)::u8;
+    buf[off + 2] = ((v >> 8) & 0xFF)::u8;
+    buf[off + 3] = (v & 0xFF)::u8;
+}
+
+# a format 4 subtable: A-C contiguous via idDelta, X via glyphIdArray.
+var f4: [64]u8;
+
+fun build_f4() {
+    val p: *u8 = ?f4[0];
+    w16(p, 0, 4);            # format
+    w16(p, 2, 42);           # length
+    w16(p, 4, 0);            # language
+    w16(p, 6, 6);            # segCountX2 (3 segments)
+    w16(p, 8, 0);
+    w16(p, 10, 0);
+    w16(p, 12, 0);
+    # endCode[3]
+    w16(p, 14, 0x43);
+    w16(p, 16, 0x58);
+    w16(p, 18, 0xFFFF);
+    w16(p, 20, 0);           # reservedPad
+    # startCode[3]
+    w16(p, 22, 0x41);
+    w16(p, 24, 0x58);
+    w16(p, 26, 0xFFFF);
+    # idDelta[3]
+    w16(p, 28, 0xFFC2);      # -62: 'A'(0x41) -> 3
+    w16(p, 30, 0);           # seg1 maps through glyphIdArray
+    w16(p, 32, 1);           # terminator
+    # idRangeOffset[3]
+    w16(p, 34, 0);
+    w16(p, 36, 4);           # seg1: slot@36 + 4 -> glyphIdArray@40
+    w16(p, 38, 0);
+    # glyphIdArray
+    w16(p, 40, 9);           # 'X' -> 9
+}
+
+test "cmap: format 4 idDelta mapping" {
+    build_f4();
+    var g: u16 = 0;
+    if (!lookup(?f4[0], 64, 0, 0x41, ?g)) { ret 1; }
+    if (g != 3) { ret 1; }
+    if (!lookup(?f4[0], 64, 0, 0x42, ?g)) { ret 1; }
+    if (g != 4) { ret 1; }
+    if (!lookup(?f4[0], 64, 0, 0x43, ?g)) { ret 1; }
+    if (g != 5) { ret 1; }
+    ret 0;
+}
+
+test "cmap: format 4 glyphIdArray mapping" {
+    build_f4();
+    var g: u16 = 0;
+    if (!lookup(?f4[0], 64, 0, 0x58, ?g)) { ret 1; }
+    if (g != 9) { ret 1; }
+    ret 0;
+}
+
+test "cmap: format 4 unmapped yields glyph 0" {
+    build_f4();
+    var g: u16 = 7;
+    if (!lookup(?f4[0], 64, 0, 0x44, ?g)) { ret 1; }
+    if (g != 0) { ret 1; }
+    # beyond the BMP is unmapped in format 4
+    g = 7;
+    if (!lookup(?f4[0], 64, 0, 0x10000, ?g)) { ret 1; }
+    if (g != 0) { ret 1; }
+    ret 0;
+}
+
+# a format 4 subtable wrapped in a cmap table with one encoding record.
+var cmap_buf: [128]u8;
+
+fun build_cmap() {
+    val p: *u8 = ?cmap_buf[0];
+    w16(p, 0, 0);            # version
+    w16(p, 2, 1);            # numTables
+    w16(p, 4, 3);            # platformID = windows
+    w16(p, 6, 1);            # encodingID = BMP unicode
+    w32(p, 8, 12);           # subtable offset (relative to cmap start)
+    build_f4();
+    var i: usize = 0;
+    for (i < 64) {
+        cmap_buf[12 + i] = f4[i];
+        i = i + 1;
+    }
+}
+
+test "cmap: select subtable and map" {
+    build_cmap();
+    var sub: usize = 0;
+    if (!select_subtable(?cmap_buf[0], 128, 0, ?sub)) { ret 1; }
+    if (sub != 12) { ret 1; }
+    var g: u16 = 0;
+    if (!lookup(?cmap_buf[0], 128, sub, 0x42, ?g)) { ret 1; }
+    if (g != 4) { ret 1; }
+    ret 0;
+}
+
+test "cmap: no unicode subtable rejected" {
+    build_cmap();
+    w16(?cmap_buf[0], 4, 1);    # platformID = macintosh, not unicode
+    w16(?cmap_buf[0], 6, 0);
+    var sub: usize = 0;
+    if (select_subtable(?cmap_buf[0], 128, 0, ?sub)) { ret 1; }
+    ret 0;
+}
+
+# format 12: segmented coverage across the full codepoint range.
+fun lookup_12(data: *u8, len: usize, sub_off: usize, codepoint: u32, out: *u16) bool {
+    var num_groups: u32 = 0;
+    if (!read.read_u32(data, len, sub_off + 12, ?num_groups)) { ret false; }
+
+    var i: usize = 0;
+    for (i < num_groups::usize) {
+        val g: usize = sub_off + 16 + i * 12;
+        var start_char: u32 = 0;
+        var end_char:   u32 = 0;
+        if (!read.read_u32(data, len, g, ?start_char)) { ret false; }
+        if (!read.read_u32(data, len, g + 4, ?end_char)) { ret false; }
+        if (codepoint >= start_char && codepoint <= end_char) {
+            var start_glyph: u32 = 0;
+            if (!read.read_u32(data, len, g + 8, ?start_glyph)) { ret false; }
+            out[0] = (start_glyph + (codepoint - start_char))::u16;
+            ret true;
+        }
+        i = i + 1;
+    }
+
+    out[0] = 0;
+    ret true;
+}
+
+# two groups: a BMP range and a single astral codepoint.
+var f12: [40]u8;
+
+fun build_f12() {
+    val p: *u8 = ?f12[0];
+    w16(p, 0, 12);           # format
+    w16(p, 2, 0);            # reserved
+    w32(p, 4, 40);           # length
+    w32(p, 8, 0);            # language
+    w32(p, 12, 2);           # numGroups
+    # group 0: U+0100..U+0102 -> glyphs 10..12
+    w32(p, 16, 0x100);
+    w32(p, 20, 0x102);
+    w32(p, 24, 10);
+    # group 1: U+1F600 -> glyph 20
+    w32(p, 28, 0x1F600);
+    w32(p, 32, 0x1F600);
+    w32(p, 36, 20);
+}
+
+test "cmap: format 12 range mapping" {
+    build_f12();
+    var g: u16 = 0;
+    if (!lookup(?f12[0], 40, 0, 0x101, ?g)) { ret 1; }
+    if (g != 11) { ret 1; }
+    ret 0;
+}
+
+test "cmap: format 12 astral codepoint" {
+    build_f12();
+    var g: u16 = 0;
+    if (!lookup(?f12[0], 40, 0, 0x1F600, ?g)) { ret 1; }
+    if (g != 20) { ret 1; }
+    ret 0;
+}
+
+test "cmap: format 12 unmapped yields glyph 0" {
+    build_f12();
+    var g: u16 = 5;
+    if (!lookup(?f12[0], 40, 0, 0x200, ?g)) { ret 1; }
+    if (g != 0) { ret 1; }
+    ret 0;
+}

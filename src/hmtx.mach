@@ -1,0 +1,100 @@
+# font.hmtx: per-glyph horizontal metrics.
+#
+# `hmtx` stores an array of (advanceWidth, leftSideBearing) pairs for the first
+# numberOfHMetrics glyphs, followed by left-side bearings alone for the rest. the
+# trailing glyphs all share the last pair's advance, a compression the format uses
+# for monospaced runs. this module resolves one glyph's advance and bearing,
+# bounds-checked through font.read.
+
+use font.read;
+use std.types.bool.bool;
+use std.types.bool.true;
+use std.types.bool.false;
+use std.types.size.usize;
+
+# read a glyph's advance width and left-side bearing from hmtx.
+#
+# for a glyph index below num_h_metrics the pair is read directly; for a higher
+# index the advance is the last long metric's advance and only the bearing is read
+# from the trailing bearing array.
+# ---
+# data:          pointer to the first byte of the file
+# len:           number of bytes addressable through data
+# off:           byte offset of the hmtx table
+# num_h_metrics: count of long metrics, from hhea
+# num_glyphs:    glyph count, from maxp
+# glyph:         glyph index to resolve
+# out_advance:   receives the advance width in font units
+# out_lsb:       receives the left-side bearing in font units
+# ret:           true when the glyph is in range and its fields lie within len
+pub fun metrics(data: *u8, len: usize, off: usize, num_h_metrics: u16, num_glyphs: u16, glyph: u16, out_advance: *u16, out_lsb: *i16) bool {
+    if (num_h_metrics == 0) { ret false; }
+    if (glyph >= num_glyphs) { ret false; }
+
+    val n: usize = num_h_metrics::usize;
+    val g: usize = glyph::usize;
+
+    if (g < n) {
+        if (!read.read_u16(data, len, off + g * 4, out_advance)) { ret false; }
+        if (!read.read_i16(data, len, off + g * 4 + 2, out_lsb)) { ret false; }
+        ret true;
+    }
+
+    if (!read.read_u16(data, len, off + (n - 1) * 4, out_advance)) { ret false; }
+    val lsb_off: usize = off + n * 4 + (g - n) * 2;
+    if (!read.read_i16(data, len, lsb_off, out_lsb)) { ret false; }
+    ret true;
+}
+
+fun w16(buf: *u8, off: usize, v: u16) {
+    buf[off]     = (v >> 8)::u8;
+    buf[off + 1] = (v & 0xFF)::u8;
+}
+
+# 2 long metrics then 2 trailing bearings, for a 4-glyph font.
+var hmtx_buf: [12]u8;
+
+fun build_hmtx() {
+    w16(?hmtx_buf[0], 0, 600);      # glyph 0 advance
+    w16(?hmtx_buf[0], 2, 30);       # glyph 0 lsb
+    w16(?hmtx_buf[0], 4, 700);      # glyph 1 advance
+    w16(?hmtx_buf[0], 6, 0xFFF6);   # glyph 1 lsb = -10
+    w16(?hmtx_buf[0], 8, 50);       # glyph 2 lsb
+    w16(?hmtx_buf[0], 10, 60);      # glyph 3 lsb
+}
+
+test "hmtx: long metric" {
+    build_hmtx();
+    var adv: u16 = 0;
+    var lsb: i16 = 0;
+    if (!metrics(?hmtx_buf[0], 12, 0, 2, 4, 1, ?adv, ?lsb)) { ret 1; }
+    if (adv != 700) { ret 1; }
+    if (lsb != -10) { ret 1; }
+    ret 0;
+}
+
+test "hmtx: trailing glyph shares last advance" {
+    build_hmtx();
+    var adv: u16 = 0;
+    var lsb: i16 = 0;
+    if (!metrics(?hmtx_buf[0], 12, 0, 2, 4, 3, ?adv, ?lsb)) { ret 1; }
+    if (adv != 700) { ret 1; }
+    if (lsb != 60) { ret 1; }
+    ret 0;
+}
+
+test "hmtx: glyph out of range rejected" {
+    build_hmtx();
+    var adv: u16 = 0;
+    var lsb: i16 = 0;
+    if (metrics(?hmtx_buf[0], 12, 0, 2, 4, 4, ?adv, ?lsb)) { ret 1; }
+    ret 0;
+}
+
+test "hmtx: zero long metrics rejected" {
+    build_hmtx();
+    var adv: u16 = 0;
+    var lsb: i16 = 0;
+    if (metrics(?hmtx_buf[0], 12, 0, 0, 4, 0, ?adv, ?lsb)) { ret 1; }
+    ret 0;
+}

@@ -1,0 +1,105 @@
+# font.loca: the glyph location table.
+#
+# `loca` stores numGlyphs+1 offsets into the `glyf` table; glyph g occupies the
+# byte range [loca[g], loca[g+1]) within glyf, and an empty range denotes a glyph
+# with no outline (a space, say). two encodings exist: the short format stores
+# each offset halved in a u16, the long format stores it directly in a u32. the
+# active encoding is head's indexToLocFormat. all reads are bounds-checked through
+# font.read.
+
+use font.read;
+use std.types.bool.bool;
+use std.types.bool.true;
+use std.types.bool.false;
+use std.types.size.usize;
+
+# read glyph g's byte range within the glyf table.
+#
+# both the g and g+1 offsets are read so the caller learns the glyph's start and
+# end; an equal pair denotes an empty glyph. the returned offsets are relative to
+# the start of the glyf table.
+# ---
+# data:   pointer to the first byte of the file
+# len:    number of bytes addressable through data
+# off:    byte offset of the loca table
+# format: indexToLocFormat from head (0 short, 1 long)
+# glyph:  glyph index to locate
+# start:  receives the glyph's start offset within glyf
+# end:    receives the glyph's end offset within glyf
+# ret:    true when both offsets are readable and end is not before start
+pub fun glyph_range(data: *u8, len: usize, off: usize, format: i16, glyph: u16, start: *u32, end: *u32) bool {
+    val g: usize = glyph::usize;
+
+    if (format == 0) {
+        var s: u16 = 0;
+        var e: u16 = 0;
+        if (!read.read_u16(data, len, off + g * 2, ?s)) { ret false; }
+        if (!read.read_u16(data, len, off + g * 2 + 2, ?e)) { ret false; }
+        # short offsets are stored halved.
+        start[0] = s::u32 * 2;
+        end[0]   = e::u32 * 2;
+    }
+    or (format == 1) {
+        var s: u32 = 0;
+        var e: u32 = 0;
+        if (!read.read_u32(data, len, off + g * 4, ?s)) { ret false; }
+        if (!read.read_u32(data, len, off + g * 4 + 4, ?e)) { ret false; }
+        start[0] = s;
+        end[0]   = e;
+    }
+    or {
+        ret false;
+    }
+
+    if (end[0] < start[0]) { ret false; }
+    ret true;
+}
+
+fun w16(buf: *u8, off: usize, v: u16) {
+    buf[off]     = (v >> 8)::u8;
+    buf[off + 1] = (v & 0xFF)::u8;
+}
+
+fun w32(buf: *u8, off: usize, v: u32) {
+    buf[off]     = (v >> 24)::u8;
+    buf[off + 1] = ((v >> 16) & 0xFF)::u8;
+    buf[off + 2] = ((v >> 8) & 0xFF)::u8;
+    buf[off + 3] = (v & 0xFF)::u8;
+}
+
+var loca_buf: [24]u8;
+
+test "loca: short format halved offsets" {
+    # entries for 3 glyphs + terminator: 0, 6, 6, 20 (stored halved)
+    w16(?loca_buf[0], 0, 0);
+    w16(?loca_buf[0], 2, 3);    # 6 / 2
+    w16(?loca_buf[0], 4, 3);    # 6 / 2 -> glyph 1 empty
+    w16(?loca_buf[0], 6, 10);   # 20 / 2
+    var s: u32 = 0;
+    var e: u32 = 0;
+    if (!glyph_range(?loca_buf[0], 8, 0, 0, 0, ?s, ?e)) { ret 1; }
+    if (s != 0 || e != 6) { ret 1; }
+    if (!glyph_range(?loca_buf[0], 8, 0, 0, 1, ?s, ?e)) { ret 1; }
+    if (s != 6 || e != 6) { ret 1; }   # empty glyph
+    if (!glyph_range(?loca_buf[0], 8, 0, 0, 2, ?s, ?e)) { ret 1; }
+    if (s != 6 || e != 20) { ret 1; }
+    ret 0;
+}
+
+test "loca: long format direct offsets" {
+    w32(?loca_buf[0], 0, 0);
+    w32(?loca_buf[0], 4, 100);
+    w32(?loca_buf[0], 8, 240);
+    var s: u32 = 0;
+    var e: u32 = 0;
+    if (!glyph_range(?loca_buf[0], 12, 0, 1, 1, ?s, ?e)) { ret 1; }
+    if (s != 100 || e != 240) { ret 1; }
+    ret 0;
+}
+
+test "loca: truncated rejected" {
+    var s: u32 = 0;
+    var e: u32 = 0;
+    if (glyph_range(?loca_buf[0], 3, 0, 0, 0, ?s, ?e)) { ret 1; }
+    ret 0;
+}

@@ -1,0 +1,313 @@
+# font.glyf: glyph outline extraction.
+#
+# a simple glyph in the glyf table is a header (contour count and bounding box)
+# followed by contour end indices, hinting instructions, and a compact
+# flags/x/y coordinate encoding. this module reads that encoding into an explicit
+# list of on/off-curve points and the index at which each contour ends. curves are
+# quadratic: a point is on the curve or an off-curve control point, per its flag.
+#
+# composite glyphs (contour count below zero) reference other glyphs with a
+# transform; extracting them is a documented limitation of this pass and reported
+# via is_composite so callers can detect and skip them. every read is
+# bounds-checked through font.read; a truncated or inconsistent glyph reports
+# failure rather than reading out of bounds.
+
+use font.read;
+use std.types.bool.bool;
+use std.types.bool.true;
+use std.types.bool.false;
+use std.types.size.usize;
+
+# simple-glyph point flag bits.
+val ON_CURVE:      u8 = 0x01;
+val X_SHORT:       u8 = 0x02;
+val Y_SHORT:       u8 = 0x04;
+val REPEAT:        u8 = 0x08;
+val X_SAME_OR_POS: u8 = 0x10;
+val Y_SAME_OR_POS: u8 = 0x20;
+
+# Point: one outline point in font units.
+# ---
+# x:        x coordinate in font design units
+# y:        y coordinate in font design units
+# on_curve: true for an on-curve point, false for a quadratic control point
+pub rec Point {
+    x:        i16;
+    y:        i16;
+    on_curve: bool;
+}
+
+# GlyphInfo: a glyph's header.
+# ---
+# num_contours: contour count; negative marks a composite glyph
+# x_min, y_min: lower-left corner of the glyph bounding box
+# x_max, y_max: upper-right corner of the glyph bounding box
+pub rec GlyphInfo {
+    num_contours: i16;
+    x_min:        i16;
+    y_min:        i16;
+    x_max:        i16;
+    y_max:        i16;
+}
+
+# Outline: the sizes an extracted simple glyph produced.
+# ---
+# num_contours: number of contours written to the ends buffer
+# num_points:   number of points written to the points buffer
+pub rec Outline {
+    num_contours: u16;
+    num_points:   u16;
+}
+
+# read a glyph's header at goff.
+# ---
+# data: pointer to the first byte of the file
+# len:  number of bytes addressable through data
+# goff: absolute byte offset of the glyph's data
+# out:  receives the header on success
+# ret:  true when the 10-byte header lies within len
+pub fun glyph_header(data: *u8, len: usize, goff: usize, out: *GlyphInfo) bool {
+    var g: GlyphInfo;
+    if (!read.read_i16(data, len, goff, ?g.num_contours)) { ret false; }
+    if (!read.read_i16(data, len, goff + 2, ?g.x_min)) { ret false; }
+    if (!read.read_i16(data, len, goff + 4, ?g.y_min)) { ret false; }
+    if (!read.read_i16(data, len, goff + 6, ?g.x_max)) { ret false; }
+    if (!read.read_i16(data, len, goff + 8, ?g.y_max)) { ret false; }
+    out[0] = g;
+    ret true;
+}
+
+# report whether a header denotes a composite glyph.
+# ---
+# info: a glyph header
+# ret:  true when the glyph references component glyphs rather than storing contours
+pub fun is_composite(info: *GlyphInfo) bool {
+    ret info.num_contours < 0;
+}
+
+# read the point count of a simple glyph from its last contour end index.
+#
+# the point count is one past the highest index in endPtsOfContours; a caller
+# sizes its point buffer from this before extracting.
+# ---
+# data:         pointer to the first byte of the file
+# len:          number of bytes addressable through data
+# goff:         absolute byte offset of the glyph's data
+# num_contours: the glyph's contour count (must be positive)
+# out:          receives the point count on success
+# ret:          true when the contour count is positive and the index is readable
+pub fun point_count(data: *u8, len: usize, goff: usize, num_contours: i16, out: *u16) bool {
+    if (num_contours <= 0) { ret false; }
+    val last: usize = goff + 10 + (num_contours::usize - 1) * 2;
+    var end_idx: u16 = 0;
+    if (!read.read_u16(data, len, last, ?end_idx)) { ret false; }
+    out[0] = end_idx + 1;
+    ret true;
+}
+
+# extract a simple glyph's contours into caller-provided buffers.
+#
+# writes each contour's inclusive end point index into ends and every point
+# (absolute coordinates, on/off-curve flag) into pts, filling out with the counts
+# written. reports failure for a composite glyph, a buffer too small for the
+# glyph's contours or points, or any out-of-range read. an empty glyph (zero
+# contours) succeeds with zero counts.
+# ---
+# data:     pointer to the first byte of the file
+# len:      number of bytes addressable through data
+# goff:     absolute byte offset of the glyph's data
+# pts:      buffer receiving the extracted points
+# pts_cap:  capacity of pts in points
+# ends:     buffer receiving each contour's end point index
+# ends_cap: capacity of ends in entries
+# out:      receives the written contour and point counts
+# ret:      true on a fully extracted simple glyph, false otherwise
+pub fun extract_simple(data: *u8, len: usize, goff: usize, pts: *Point, pts_cap: usize, ends: *u16, ends_cap: usize, out: *Outline) bool {
+    var nc_raw: i16 = 0;
+    if (!read.read_i16(data, len, goff, ?nc_raw)) { ret false; }
+    if (nc_raw < 0) { ret false; }
+    if (nc_raw == 0) {
+        out[0] = Outline{ num_contours: 0, num_points: 0 };
+        ret true;
+    }
+
+    val nc: usize = nc_raw::usize;
+    if (nc > ends_cap) { ret false; }
+
+    var i: usize = 0;
+    for (i < nc) {
+        if (!read.read_u16(data, len, goff + 10 + i * 2, ?ends[i])) { ret false; }
+        i = i + 1;
+    }
+
+    val np_full: usize = ends[nc - 1]::usize + 1;
+    if (np_full > pts_cap) { ret false; }
+    if (np_full > 0xFFFF) { ret false; }
+    val np: usize = np_full;
+
+    var ins_len: u16 = 0;
+    if (!read.read_u16(data, len, goff + 10 + nc * 2, ?ins_len)) { ret false; }
+
+    # cursor walks the flags block, then the x block, then the y block in turn.
+    var cursor: usize = goff + 10 + nc * 2 + 2 + ins_len::usize;
+
+    # expand the run-length flags, stashing each point's full flag byte in
+    # on_curve for the coordinate passes; it is reduced to the on-curve bit at the end.
+    i = 0;
+    for (i < np) {
+        var flag: u8 = 0;
+        if (!read.read_u8(data, len, cursor, ?flag)) { ret false; }
+        cursor = cursor + 1;
+        pts[i].on_curve = flag;
+        i = i + 1;
+
+        if ((flag & REPEAT) != 0) {
+            var reps: u8 = 0;
+            if (!read.read_u8(data, len, cursor, ?reps)) { ret false; }
+            cursor = cursor + 1;
+            var r: u8 = 0;
+            for (r < reps) {
+                if (i < np) {
+                    pts[i].on_curve = flag;
+                    i = i + 1;
+                }
+                r = r + 1;
+            }
+        }
+    }
+
+    var accx: i32 = 0;
+    i = 0;
+    for (i < np) {
+        val flag: u8 = pts[i].on_curve;
+        if ((flag & X_SHORT) != 0) {
+            var dx: u8 = 0;
+            if (!read.read_u8(data, len, cursor, ?dx)) { ret false; }
+            cursor = cursor + 1;
+            if ((flag & X_SAME_OR_POS) != 0) { accx = accx + dx::i32; }
+            or { accx = accx - dx::i32; }
+        }
+        or {
+            if ((flag & X_SAME_OR_POS) == 0) {
+                var dw: i16 = 0;
+                if (!read.read_i16(data, len, cursor, ?dw)) { ret false; }
+                cursor = cursor + 2;
+                accx = accx + dw::i32;
+            }
+        }
+        pts[i].x = accx::i16;
+        i = i + 1;
+    }
+
+    var accy: i32 = 0;
+    i = 0;
+    for (i < np) {
+        val flag: u8 = pts[i].on_curve;
+        if ((flag & Y_SHORT) != 0) {
+            var dy: u8 = 0;
+            if (!read.read_u8(data, len, cursor, ?dy)) { ret false; }
+            cursor = cursor + 1;
+            if ((flag & Y_SAME_OR_POS) != 0) { accy = accy + dy::i32; }
+            or { accy = accy - dy::i32; }
+        }
+        or {
+            if ((flag & Y_SAME_OR_POS) == 0) {
+                var dw: i16 = 0;
+                if (!read.read_i16(data, len, cursor, ?dw)) { ret false; }
+                cursor = cursor + 2;
+                accy = accy + dw::i32;
+            }
+        }
+        pts[i].y = accy::i16;
+        i = i + 1;
+    }
+
+    # reduce the stashed flag bytes to the on-curve bit.
+    i = 0;
+    for (i < np) {
+        pts[i].on_curve = (pts[i].on_curve & ON_CURVE);
+        i = i + 1;
+    }
+
+    out[0] = Outline{ num_contours: nc_raw::u16, num_points: np::u16 };
+    ret true;
+}
+
+fun w16(buf: *u8, off: usize, v: u16) {
+    buf[off]     = (v >> 8)::u8;
+    buf[off + 1] = (v & 0xFF)::u8;
+}
+
+var glyph_buf: [64]u8;
+
+# build a triangle: on-curve points (100,100), (300,100), (200,400) in one contour,
+# exercising short +, short -, same-as-previous, and i16 coordinate deltas.
+fun build_triangle() {
+    val p: *u8 = ?glyph_buf[0];
+    w16(p, 0, 1);            # numberOfContours
+    w16(p, 2, 100);          # xMin
+    w16(p, 4, 100);          # yMin
+    w16(p, 6, 300);          # xMax
+    w16(p, 8, 400);          # yMax
+    w16(p, 10, 2);           # endPtsOfContours[0] = 2 (3 points)
+    w16(p, 12, 0);           # instructionLength
+    glyph_buf[14] = 0x37;    # p0: on, x short +, y short +
+    glyph_buf[15] = 0x33;    # p1: on, x short +, y same
+    glyph_buf[16] = 0x03;    # p2: on, x short -, y i16
+    glyph_buf[17] = 100;     # p0 x = +100
+    glyph_buf[18] = 200;     # p1 x = +200
+    glyph_buf[19] = 100;     # p2 x = -100
+    glyph_buf[20] = 100;     # p0 y = +100
+    w16(p, 21, 300);         # p2 y = +300 (i16)
+}
+
+var tri_pts: [8]Point;
+var tri_ends: [4]u16;
+
+test "glyf: header and composite detection" {
+    build_triangle();
+    var info: GlyphInfo;
+    if (!glyph_header(?glyph_buf[0], 64, 0, ?info)) { ret 1; }
+    if (info.num_contours != 1) { ret 1; }
+    if (info.x_max != 300 || info.y_max != 400) { ret 1; }
+    if (is_composite(?info)) { ret 1; }
+    ret 0;
+}
+
+test "glyf: point count" {
+    build_triangle();
+    var n: u16 = 0;
+    if (!point_count(?glyph_buf[0], 64, 0, 1, ?n)) { ret 1; }
+    if (n != 3) { ret 1; }
+    ret 0;
+}
+
+test "glyf: extract triangle points" {
+    build_triangle();
+    var o: Outline;
+    if (!extract_simple(?glyph_buf[0], 64, 0, ?tri_pts[0], 8, ?tri_ends[0], 4, ?o)) { ret 1; }
+    if (o.num_contours != 1) { ret 1; }
+    if (o.num_points != 3) { ret 1; }
+    if (tri_ends[0] != 2) { ret 1; }
+    if (tri_pts[0].x != 100 || tri_pts[0].y != 100) { ret 1; }
+    if (tri_pts[1].x != 300 || tri_pts[1].y != 100) { ret 1; }
+    if (tri_pts[2].x != 200 || tri_pts[2].y != 400) { ret 1; }
+    if (!tri_pts[0].on_curve) { ret 1; }
+    if (!tri_pts[2].on_curve) { ret 1; }
+    ret 0;
+}
+
+test "glyf: too few points capacity rejected" {
+    build_triangle();
+    var o: Outline;
+    if (extract_simple(?glyph_buf[0], 64, 0, ?tri_pts[0], 2, ?tri_ends[0], 4, ?o)) { ret 1; }
+    ret 0;
+}
+
+test "glyf: composite rejected by extract" {
+    build_triangle();
+    w16(?glyph_buf[0], 0, 0xFFFF);   # numberOfContours = -1
+    var o: Outline;
+    if (extract_simple(?glyph_buf[0], 64, 0, ?tri_pts[0], 8, ?tri_ends[0], 4, ?o)) { ret 1; }
+    ret 0;
+}

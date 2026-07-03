@@ -7,6 +7,16 @@
 # parsers (glyf, cmap, hmtx, ...) and the rasterizer are built on.
 
 use font.read;
+use font.table;
+use font.head;
+use font.maxp;
+use font.hhea;
+use font.hmtx;
+use font.cmap;
+use font.loca;
+use font.glyf;
+use font.raster;
+use font.info;
 # links the startup entrypoint so `mach test` over this library produces a binary.
 use std.runtime;
 
@@ -15,3 +25,40 @@ fwd read.read_u16;
 fwd read.read_i16;
 fwd read.read_u32;
 fwd read.tag_eq;
+
+fwd table.Table;
+fwd table.is_truetype;
+fwd table.num_tables;
+fwd table.find_table;
+
+fwd head.Head;
+fwd head.parse_head;
+fwd maxp.num_glyphs;
+fwd hhea.Hhea;
+fwd hhea.parse_hhea;
+fwd hmtx.metrics;
+
+fwd cmap.select_subtable;
+fwd cmap.lookup;
+
+fwd loca.glyph_range;
+
+fwd glyf.Point;
+fwd glyf.GlyphInfo;
+fwd glyf.Outline;
+fwd glyf.glyph_header;
+fwd glyf.is_composite;
+fwd glyf.point_count;
+fwd glyf.extract_simple;
+
+fwd raster.Edge;
+fwd raster.flatten;
+fwd raster.fill;
+
+fwd info.Font;
+fwd info.init;
+fwd info.glyph_hmetrics;
+fwd info.glyph_index;
+fwd info.glyph_outline;
+fwd info.scale_for_pixel_height;
+fwd info.render_glyph;

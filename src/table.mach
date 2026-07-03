@@ -1,0 +1,180 @@
+# font.table: the sfnt offset table and table directory.
+#
+# a truetype file opens with an offset table naming a table count, followed by
+# that many 16-byte directory entries. each entry carries a four-byte tag and the
+# byte offset and length of one table within the file. this module validates that
+# header and resolves a table span by tag. every read is bounds-checked through
+# font.read, so a truncated or malformed directory reports failure rather than
+# reading out of bounds.
+
+use font.read;
+use std.types.bool.bool;
+use std.types.bool.true;
+use std.types.bool.false;
+use std.types.size.usize;
+
+# byte offset of the table directory, immediately after the 12-byte offset table.
+val DIR_OFFSET: usize = 12;
+# size in bytes of one table directory entry.
+val ENTRY_SIZE: usize = 16;
+
+# sfnt version tagging a file that carries truetype (glyf) outlines.
+val SFNT_TRUETYPE: u32 = 0x00010000;
+# legacy 'true' sfnt version, also truetype outlines.
+val SFNT_TRUE: u32 = 0x74727565;
+
+# Table: the located byte span of one table within the font file.
+# ---
+# offset: byte offset of the table's first byte from the start of the file
+# length: table length in bytes
+pub rec Table {
+    offset: u32;
+    length: u32;
+}
+
+# report whether the file begins with a truetype-outline sfnt version.
+#
+# rejects 'OTTO' (CFF outlines) and 'ttcf' (font collections), which carry no
+# glyf table and are out of scope.
+# ---
+# data: pointer to the first byte of the file
+# len:  number of bytes addressable through data
+# ret:  true when the sfnt version denotes truetype outlines
+pub fun is_truetype(data: *u8, len: usize) bool {
+    var v: u32 = 0;
+    if (!read.read_u32(data, len, 0, ?v)) { ret false; }
+    ret v == SFNT_TRUETYPE || v == SFNT_TRUE;
+}
+
+# read the number of tables declared by the offset table.
+# ---
+# data: pointer to the first byte of the file
+# len:  number of bytes addressable through data
+# out:  receives the table count on success
+# ret:  true when the count field is within len, false otherwise
+pub fun num_tables(data: *u8, len: usize, out: *u16) bool {
+    ret read.read_u16(data, len, 4, out);
+}
+
+# locate a table by its four-byte tag.
+#
+# scans the directory for an entry whose tag matches, then reads that entry's
+# offset and length. the returned span is not itself range-checked against the
+# file; callers validate spans as they read table contents through font.read.
+# ---
+# data:       pointer to the first byte of the file
+# len:        number of bytes addressable through data
+# a, b, c, d: the four tag bytes to match (e.g. 'g','l','y','f')
+# out:        receives the table span on success
+# ret:        true when a matching, fully-present directory entry is found
+pub fun find_table(data: *u8, len: usize, a: u8, b: u8, c: u8, d: u8, out: *Table) bool {
+    var count: u16 = 0;
+    if (!num_tables(data, len, ?count)) { ret false; }
+
+    var i: usize = 0;
+    for (i < count::usize) {
+        val entry: usize = DIR_OFFSET + i * ENTRY_SIZE;
+        if (read.tag_eq(data, len, entry, a, b, c, d)) {
+            var off: u32 = 0;
+            var length: u32 = 0;
+            if (!read.read_u32(data, len, entry + 8, ?off)) { ret false; }
+            if (!read.read_u32(data, len, entry + 12, ?length)) { ret false; }
+            out[0] = Table{ offset: off, length: length };
+            ret true;
+        }
+        i = i + 1;
+    }
+
+    ret false;
+}
+
+# write a big-endian u16 into a test fixture buffer.
+fun put_u16(buf: *u8, off: usize, v: u16) {
+    buf[off]     = (v >> 8)::u8;
+    buf[off + 1] = (v & 0xFF)::u8;
+}
+
+# write a big-endian u32 into a test fixture buffer.
+fun put_u32(buf: *u8, off: usize, v: u32) {
+    buf[off]     = (v >> 24)::u8;
+    buf[off + 1] = ((v >> 16) & 0xFF)::u8;
+    buf[off + 2] = ((v >> 8) & 0xFF)::u8;
+    buf[off + 3] = (v & 0xFF)::u8;
+}
+
+# write a four-byte tag into a test fixture buffer.
+fun put_tag(buf: *u8, off: usize, a: u8, b: u8, c: u8, d: u8) {
+    buf[off]     = a;
+    buf[off + 1] = b;
+    buf[off + 2] = c;
+    buf[off + 3] = d;
+}
+
+var dir_buf: [44]u8;
+
+# build a two-entry offset table + directory: cmap at 100/16, glyf at 200/48.
+fun build_dir() {
+    put_u32(?dir_buf[0], 0, SFNT_TRUETYPE);
+    put_u16(?dir_buf[0], 4, 2);
+    put_u16(?dir_buf[0], 6, 0);
+    put_u16(?dir_buf[0], 8, 0);
+    put_u16(?dir_buf[0], 10, 0);
+
+    put_tag(?dir_buf[0], 12, 'c', 'm', 'a', 'p');
+    put_u32(?dir_buf[0], 16, 0);
+    put_u32(?dir_buf[0], 20, 100);
+    put_u32(?dir_buf[0], 24, 16);
+
+    put_tag(?dir_buf[0], 28, 'g', 'l', 'y', 'f');
+    put_u32(?dir_buf[0], 32, 0);
+    put_u32(?dir_buf[0], 36, 200);
+    put_u32(?dir_buf[0], 40, 48);
+}
+
+test "table: truetype sfnt version accepted" {
+    build_dir();
+    if (!is_truetype(?dir_buf[0], 44)) { ret 1; }
+    ret 0;
+}
+
+test "table: OTTO rejected" {
+    build_dir();
+    put_u32(?dir_buf[0], 0, 0x4F54544F);
+    if (is_truetype(?dir_buf[0], 44)) { ret 1; }
+    ret 0;
+}
+
+test "table: num_tables" {
+    build_dir();
+    var n: u16 = 0;
+    if (!num_tables(?dir_buf[0], 44, ?n)) { ret 1; }
+    if (n != 2) { ret 1; }
+    ret 0;
+}
+
+test "table: find present entries" {
+    build_dir();
+    var t: Table;
+    if (!find_table(?dir_buf[0], 44, 'g', 'l', 'y', 'f', ?t)) { ret 1; }
+    if (t.offset != 200) { ret 1; }
+    if (t.length != 48) { ret 1; }
+    if (!find_table(?dir_buf[0], 44, 'c', 'm', 'a', 'p', ?t)) { ret 1; }
+    if (t.offset != 100) { ret 1; }
+    if (t.length != 16) { ret 1; }
+    ret 0;
+}
+
+test "table: missing tag" {
+    build_dir();
+    var t: Table;
+    if (find_table(?dir_buf[0], 44, 'h', 'e', 'a', 'd', ?t)) { ret 1; }
+    ret 0;
+}
+
+test "table: truncated directory rejected" {
+    build_dir();
+    var t: Table;
+    # only the offset table plus one full entry fit; the second entry's span runs past len.
+    if (find_table(?dir_buf[0], 28, 'g', 'l', 'y', 'f', ?t)) { ret 1; }
+    ret 0;
+}
