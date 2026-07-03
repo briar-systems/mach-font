@@ -14,6 +14,7 @@ use font.head;
 use font.maxp;
 use font.hhea;
 use font.hmtx;
+use font.cmap;
 use std.types.bool.bool;
 use std.types.bool.true;
 use std.types.bool.false;
@@ -104,6 +105,15 @@ pub fun init(data: *u8, len: usize, out: *Font) bool {
         f.num_h_metrics = hh.num_h_metrics;
     }
 
+    # an unusable or absent cmap leaves cmap_sub at 0; character mapping is then
+    # unavailable but the font is still valid for index-addressed glyph access.
+    if (f.cmap_off != 0) {
+        var sub: usize = 0;
+        if (cmap.select_subtable(data, len, f.cmap_off, ?sub)) {
+            f.cmap_sub = sub;
+        }
+    }
+
     out[0] = f;
     ret true;
 }
@@ -122,6 +132,21 @@ pub fun init(data: *u8, len: usize, out: *Font) bool {
 pub fun glyph_hmetrics(f: *Font, glyph: u16, out_advance: *u16, out_lsb: *i16) bool {
     if (f.hmtx_off == 0) { ret false; }
     ret hmtx.metrics(f.data, f.len, f.hmtx_off, f.num_h_metrics, f.num_glyphs, glyph, out_advance, out_lsb);
+}
+
+# map a unicode codepoint to a glyph index through the selected cmap subtable.
+#
+# a convenience over font.cmap using the handle's selected subtable. an unmapped
+# codepoint yields glyph 0. reports failure when the font has no usable cmap
+# subtable or the subtable is malformed.
+# ---
+# f:         prepared font handle
+# codepoint: the unicode codepoint to map
+# out:       receives the glyph index (0 when unmapped) on success
+# ret:       true on a successful lookup, false when no cmap is available
+pub fun glyph_index(f: *Font, codepoint: u32, out: *u16) bool {
+    if (f.cmap_sub == 0) { ret false; }
+    ret cmap.lookup(f.data, f.len, f.cmap_sub, codepoint, out);
 }
 
 fun w16(buf: *u8, off: usize, v: u16) {

@@ -12,6 +12,7 @@ use font.head;
 use font.maxp;
 use font.hhea;
 use font.hmtx;
+use font.cmap;
 use font.info;
 # links the startup entrypoint so `mach test` over this library produces a binary.
 use std.runtime;
@@ -34,6 +35,10 @@ fwd hhea.Hhea;
 fwd hhea.parse_hhea;
 fwd hmtx.metrics;
 
+fwd cmap.select_subtable;
+fwd cmap.lookup;
+
 fwd info.Font;
 fwd info.init;
 fwd info.glyph_hmetrics;
+fwd info.glyph_index;
