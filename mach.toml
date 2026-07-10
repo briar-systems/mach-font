@@ -1,7 +1,5 @@
 [project]
 id          = "font"
-name        = "Mach Font Library"
-description = "Mach font library"
 version     = "0.2.0"
 src         = "src"
 out         = "out/{target.name}/{profile.name}"
@@ -22,16 +20,20 @@ os  = "darwin"
 abi = "sysv64"
 
 [profile.debug]
-opt = 0
+opt   = 0
+debug = true
 
 [profile.release]
-opt = 2
+opt   = 2
+debug = false
 
 [artifact.font]
 kind    = "static"
 entry   = "font.mach"
 out     = "lib/font"
 targets = ["*"]
+link    = []
+need    = []
 
 [dep.mach-std]
 git = "https://github.com/briar-systems/mach-std"
