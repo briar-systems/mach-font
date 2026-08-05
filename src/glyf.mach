@@ -6,10 +6,12 @@
 # list of on/off-curve points and the index at which each contour ends. curves are
 # quadratic: a point is on the curve or an off-curve control point, per its flag.
 #
-# composite glyphs (contour count below zero) reference other glyphs with a
-# transform; extracting them is a documented limitation of this pass and reported
-# via is_composite so callers can detect and skip them. every read is
-# bounds-checked through font.read; a truncated or inconsistent glyph reports
+# a composite glyph (contour count below zero) instead stores a chain of component
+# records, each naming another glyph, a placement offset, and an optional 2x2
+# transform. this module decodes one record at a time and supplies the affine
+# machinery to place and nest them; resolving a component index back to its glyph
+# data needs the loca table, so the recursive walk lives in font.info. every read
+# is bounds-checked through font.read; a truncated or inconsistent glyph reports
 # failure rather than reading out of bounds.
 
 use font.read;
@@ -25,6 +27,27 @@ val Y_SHORT:       u8 = 0x04;
 val REPEAT:        u8 = 0x08;
 val X_SAME_OR_POS: u8 = 0x10;
 val Y_SAME_OR_POS: u8 = 0x20;
+
+# composite-glyph component flag bits
+# ---
+# args are signed 16-bit rather than 8-bit
+pub val ARG_1_AND_2_ARE_WORDS: u16 = 0x0001;
+# args are a placement offset; otherwise they are point indices to match
+pub val ARGS_ARE_XY_VALUES: u16 = 0x0002;
+# round the placement offset to the nearest design-unit grid line
+pub val ROUND_XY_TO_GRID: u16 = 0x0004;
+# one F2Dot14 scale applied to both axes
+pub val WE_HAVE_A_SCALE: u16 = 0x0008;
+# another component record follows this one
+pub val MORE_COMPONENTS: u16 = 0x0020;
+# separate F2Dot14 x and y scales
+pub val WE_HAVE_AN_X_AND_Y_SCALE: u16 = 0x0040;
+# a full F2Dot14 2x2 matrix
+pub val WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080;
+# scale the placement offset by the component transform
+pub val SCALED_COMPONENT_OFFSET: u16 = 0x0800;
+# leave the placement offset unscaled, overriding the flag above
+pub val UNSCALED_COMPONENT_OFFSET: u16 = 0x1000;
 
 # one outline point in font units
 # ---
@@ -59,6 +82,93 @@ pub rec Outline {
     num_points:   u16;
 }
 
+# an affine placement of one outline into another's design space
+#
+# a point maps as x' = a*x + c*y + dx, y' = b*x + d*y + dy, matching the column
+# convention the composite-glyph spec states its 2x2 matrix in.
+# ---
+# a, b, c, d: the 2x2 linear part
+# dx, dy:     the translation in font design units
+pub rec Xform {
+    a:  f32;
+    b:  f32;
+    c:  f32;
+    d:  f32;
+    dx: f32;
+    dy: f32;
+}
+
+# one component record of a composite glyph
+# ---
+# glyph: index of the glyph this component draws
+# flags: the record's raw component flags
+# m:     the component's placement transform
+pub rec Component {
+    glyph: u16;
+    flags: u16;
+    m:     Xform;
+}
+
+# write the identity placement
+# ---
+# out: receives a transform that leaves every point where it is
+pub fun xform_identity(out: *Xform) {
+    out[0] = Xform{ a: 1.0, b: 0.0, c: 0.0, d: 1.0, dx: 0.0, dy: 0.0 };
+}
+
+# compose two placements: apply inner first, then outer
+#
+# nesting a composite inside a composite stacks transforms this way, so a
+# component's points land where the outermost glyph places them.
+# ---
+# outer: the enclosing placement
+# inner: the placement applied to the points first
+# out:   receives the combined transform
+pub fun xform_compose(outer: *Xform, inner: *Xform, out: *Xform) {
+    var m: Xform;
+    m.a  = outer.a * inner.a + outer.c * inner.b;
+    m.b  = outer.b * inner.a + outer.d * inner.b;
+    m.c  = outer.a * inner.c + outer.c * inner.d;
+    m.d  = outer.b * inner.c + outer.d * inner.d;
+    m.dx = outer.a * inner.dx + outer.c * inner.dy + outer.dx;
+    m.dy = outer.b * inner.dx + outer.d * inner.dy + outer.dy;
+    out[0] = m;
+}
+
+# round to nearest, halves away from zero
+fun round_f32(v: f32) f32 {
+    if (v >= 0.0) { ret (v + 0.5)::i32::f32; }
+    ret (v - 0.5)::i32::f32;
+}
+
+# round to nearest and saturate into the design-unit coordinate range
+fun to_coord(v: f32) i16 {
+    val r: f32 = round_f32(v);
+    if (r > 32767.0) { ret 32767; }
+    if (r < -32768.0) { ret -32768; }
+    ret r::i32::i16;
+}
+
+# apply a placement to points in place
+#
+# coordinates stay in font design units, so each transformed point is rounded back
+# to the nearest unit; a transform that pushes a point outside the design-unit
+# range saturates rather than wrapping.
+# ---
+# m:   the placement to apply
+# pts: the points to transform
+# n:   number of points in pts
+pub fun xform_apply(m: *Xform, pts: *Point, n: usize) {
+    var i: usize = 0;
+    for (i < n) {
+        val x: f32 = pts[i].x::f32;
+        val y: f32 = pts[i].y::f32;
+        pts[i].x = to_coord(m.a * x + m.c * y + m.dx);
+        pts[i].y = to_coord(m.b * x + m.d * y + m.dy);
+        i = i + 1;
+    }
+}
+
 # read a glyph's header at goff
 # ---
 # data: pointer to the first byte of the file
@@ -83,6 +193,109 @@ pub fun glyph_header(data: *u8, len: usize, goff: usize, out: *GlyphInfo) bool {
 # ret:  true when the glyph references component glyphs rather than storing contours
 pub fun is_composite(info: *GlyphInfo) bool {
     ret info.num_contours < 0;
+}
+
+# byte offset of a composite glyph's first component record, past the 10-byte header
+pub val COMPONENTS_OFFSET: usize = 10;
+
+# read one component record of a composite glyph
+#
+# decodes the record's flags, component glyph index, and placement into a
+# transform ready to apply to that component's points. records are variable
+# length, so out_next reports where the next one begins; the caller stops when the
+# record's MORE_COMPONENTS flag is clear. when ARGS_ARE_XY_VALUES is clear the two
+# args are point indices to align rather than an offset, and they are reported
+# verbatim in the transform's translation for a caller that rejects or handles
+# that placement itself.
+# ---
+# data:     pointer to the first byte of the file
+# len:      number of bytes addressable through data
+# off:      absolute byte offset of the component record
+# out:      receives the decoded component on success
+# out_next: receives the byte offset just past the record
+# ret:      true when the whole record lies within len, false otherwise
+pub fun read_component(data: *u8, len: usize, off: usize, out: *Component, out_next: *usize) bool {
+    var c: Component;
+    if (!read.read_u16(data, len, off, ?c.flags)) { ret false; }
+    if (!read.read_u16(data, len, off + 2, ?c.glyph)) { ret false; }
+
+    val xy: bool = (c.flags & ARGS_ARE_XY_VALUES) != 0;
+    var cursor: usize = off + 4;
+    var arg1: f32 = 0.0;
+    var arg2: f32 = 0.0;
+
+    if ((c.flags & ARG_1_AND_2_ARE_WORDS) != 0) {
+        var w1: u16 = 0;
+        var w2: u16 = 0;
+        if (!read.read_u16(data, len, cursor, ?w1)) { ret false; }
+        if (!read.read_u16(data, len, cursor + 2, ?w2)) { ret false; }
+        if (xy) {
+            arg1 = w1:~i16::f32;
+            arg2 = w2:~i16::f32;
+        }
+        or {
+            arg1 = w1::f32;
+            arg2 = w2::f32;
+        }
+        cursor = cursor + 4;
+    }
+    or {
+        var b1: u8 = 0;
+        var b2: u8 = 0;
+        if (!read.read_u8(data, len, cursor, ?b1)) { ret false; }
+        if (!read.read_u8(data, len, cursor + 1, ?b2)) { ret false; }
+        if (xy) {
+            arg1 = b1:~i8::f32;
+            arg2 = b2:~i8::f32;
+        }
+        or {
+            arg1 = b1::f32;
+            arg2 = b2::f32;
+        }
+        cursor = cursor + 2;
+    }
+
+    c.m.a = 1.0;
+    c.m.b = 0.0;
+    c.m.c = 0.0;
+    c.m.d = 1.0;
+
+    if ((c.flags & WE_HAVE_A_SCALE) != 0) {
+        if (!read.read_f2dot14(data, len, cursor, ?c.m.a)) { ret false; }
+        c.m.d = c.m.a;
+        cursor = cursor + 2;
+    }
+    or ((c.flags & WE_HAVE_AN_X_AND_Y_SCALE) != 0) {
+        if (!read.read_f2dot14(data, len, cursor, ?c.m.a)) { ret false; }
+        if (!read.read_f2dot14(data, len, cursor + 2, ?c.m.d)) { ret false; }
+        cursor = cursor + 4;
+    }
+    or ((c.flags & WE_HAVE_A_TWO_BY_TWO) != 0) {
+        if (!read.read_f2dot14(data, len, cursor, ?c.m.a)) { ret false; }
+        if (!read.read_f2dot14(data, len, cursor + 2, ?c.m.b)) { ret false; }
+        if (!read.read_f2dot14(data, len, cursor + 4, ?c.m.c)) { ret false; }
+        if (!read.read_f2dot14(data, len, cursor + 6, ?c.m.d)) { ret false; }
+        cursor = cursor + 8;
+    }
+
+    c.m.dx = arg1;
+    c.m.dy = arg2;
+    if (xy) {
+        # an offset is stated in the composite's space by default; SCALED_COMPONENT_OFFSET
+        # states it in the component's own space, so it passes through the 2x2 first.
+        if ((c.flags & SCALED_COMPONENT_OFFSET) != 0 && (c.flags & UNSCALED_COMPONENT_OFFSET) == 0) {
+            c.m.dx = c.m.a * arg1 + c.m.c * arg2;
+            c.m.dy = c.m.b * arg1 + c.m.d * arg2;
+        }
+        if ((c.flags & ROUND_XY_TO_GRID) != 0) {
+            c.m.dx = round_f32(c.m.dx);
+            c.m.dy = round_f32(c.m.dy);
+        }
+    }
+
+    out[0] = c;
+    out_next[0] = cursor;
+    ret true;
 }
 
 # read the point count of a simple glyph from its last contour end index
