@@ -73,6 +73,7 @@ fwd raster.fill;
 fwd info.Font;
 fwd info.init;
 fwd info.glyph_hmetrics;
+fwd info.glyph_kern_advance;
 fwd info.glyph_index;
 fwd info.glyph_outline;
 fwd info.outline_maxima;
