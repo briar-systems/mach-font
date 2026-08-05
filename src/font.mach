@@ -15,6 +15,7 @@ use font.hmtx;
 use font.cmap;
 use font.loca;
 use font.glyf;
+use font.kern;
 use font.raster;
 use font.info;
 # links the startup entrypoint so `mach test` over this library produces a binary.
@@ -59,6 +60,11 @@ fwd glyf.read_component;
 fwd glyf.xform_identity;
 fwd glyf.xform_compose;
 fwd glyf.xform_apply;
+
+# kern's subtable selection and pair lookup carry the table name into the flat
+# surface, where cmap already holds the unqualified spellings.
+fwd kern_select_subtable: kern.select_subtable;
+fwd kern_lookup: kern.lookup;
 
 fwd raster.Edge;
 fwd raster.flatten;
