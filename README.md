@@ -30,20 +30,28 @@ ref = "branch/main"
 ## Scope
 
 - TrueType parsing: the table directory and the core tables a rasterizer needs
-  (`glyf`, `loca`, `head`, `maxp`, `cmap`, `hmtx`, ...).
+  (`glyf`, `loca`, `head`, `maxp`, `cmap`, `hmtx`, `kern`, ...), including
+  composite glyphs resolved into a single outline.
 - Glyph rasterization at [stb_truetype](https://github.com/nothings/stb)-level
   quality: quadratic outlines flattened and scan-filled to an anti-aliased
   coverage bitmap.
 - Atlas-friendly output: glyph coverage plus the metrics (advance, bearings,
-  bounding box) a renderer needs to lay glyphs into a texture atlas.
+  bounding box, pair kerning) a renderer needs to lay glyphs into a texture
+  atlas.
 
 ## Non-goals
 
-- FreeType-parity hinting. The bytecode interpreter and grid-fitting are out of
-  scope; rasterization is unhinted.
-- Complex text shaping — bidi, cursive joining, contextual substitution
-  (HarfBuzz territory). Single-run left-to-right layout for Latin and friends is
-  enough initially.
+- **TrueType hinting.** The bytecode interpreter and grid-fitting are out of
+  scope; rasterization is unhinted. Unhinted anti-aliased rendering is the modern
+  norm — every current desktop and mobile stack ignores the hints at the sizes
+  that matter — so the interpreter would buy nothing here.
+- **`GSUB`/`GPOS` shaping.** Ligature and contextual substitution, mark
+  attachment, and OpenType positioning are HarfBuzz territory, as are bidi and
+  cursive joining. Single-run left-to-right layout with `kern` pair spacing is
+  what this library supports.
+- **CFF/OTF outlines.** `mach-font` reads `glyf` (quadratic) outlines only;
+  `OTTO` files, whose cubic outlines live in a `CFF ` table, are rejected at
+  `init` rather than partially parsed.
 - Font editing or subsetting. `mach-font` reads fonts; it does not write them.
 
 ## Platforms
@@ -62,12 +70,13 @@ src/
   read.mach     bounds-checked big-endian reads — the shared foundation
   table.mach    sfnt offset table + table directory lookup by tag
   head.mach     font header: unitsPerEm, loca format, bounding box
-  maxp.mach     glyph count
+  maxp.mach     glyph count and outline storage maxima
   hhea.mach     horizontal header: ascent, descent, long-metric count
   hmtx.mach     per-glyph advance width and left-side bearing
   cmap.mach     character-to-glyph mapping (format 4 and format 12)
+  kern.mach     pair kerning (format 0 horizontal)
   loca.mach     glyph location table (short and long offsets)
-  glyf.mach     simple-glyph outline extraction (on/off-curve points)
+  glyf.mach     glyph outlines: point extraction + composite component records
   raster.mach   outline flattening + coverage-bitmap fill
   info.mach     the Font facade tying the tables together
 ```
@@ -80,20 +89,26 @@ rejected cleanly.
 
 ## Status
 
-The parsing core is complete: the table directory, global metrics
-(`head`/`maxp`/`hhea`/`hmtx`), character mapping (`cmap` formats 4 and 12), and
-simple-glyph outline extraction (`loca` + `glyf`). Rasterization flattens
-quadratic outlines and scan-fills an anti-aliased 8-bit coverage bitmap with the
-nonzero winding rule. The `Font` handle (`font.init`) locates the tables once and
-exposes `glyph_index`, `glyph_hmetrics`, `glyph_outline`, and `render_glyph`. All
+Parsing covers the table directory, global metrics (`head`/`maxp`/`hhea`/`hmtx`),
+character mapping (`cmap` formats 4 and 12), pair kerning (`kern` format 0), and
+outline extraction (`loca` + `glyf`) for both simple and composite glyphs.
+Rasterization flattens quadratic outlines and scan-fills an anti-aliased 8-bit
+coverage bitmap with the nonzero winding rule. The `Font` handle (`font.init`)
+locates the tables once and exposes `glyph_index`, `glyph_hmetrics`,
+`glyph_kern_advance`, `glyph_outline`, `outline_maxima`, and `render_glyph`. All
 rasterization buffers are caller-provided, so the library allocates nothing.
+
+A composite glyph resolves recursively into one flat outline, so `render_glyph`
+rasterizes an accented letter exactly as it does a simple one. Size the point and
+contour buffers from `outline_maxima` — a composite's resolved point count
+exceeds anything `point_count` reports for a simple glyph.
 
 Known limitations of this pass:
 
-- **Composite glyphs are not extracted.** A glyph whose contour count is negative
-  references component glyphs with a transform; `font.is_composite` detects them
-  and outline extraction rejects them rather than resolving one level. Simple
-  glyphs (the common case) are fully supported.
+- **Point-matched components are rejected.** A component placed by matching a
+  point index against the glyph built so far, rather than by an explicit offset,
+  is refused instead of being silently misplaced. It is vanishingly rare in
+  shipping fonts.
 - **The fill is unoptimized.** Coverage is sampled on a supersampling subgrid
   per pixel; correct and simple, but a sorted active-edge sweep would be faster
   for large glyphs.

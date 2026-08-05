@@ -15,6 +15,7 @@ use font.hmtx;
 use font.cmap;
 use font.loca;
 use font.glyf;
+use font.kern;
 use font.raster;
 use font.info;
 # links the startup entrypoint so `mach test` over this library produces a binary.
@@ -24,6 +25,7 @@ fwd read.read_u8;
 fwd read.read_u16;
 fwd read.read_i16;
 fwd read.read_u32;
+fwd read.read_f2dot14;
 fwd read.tag_eq;
 
 fwd table.Table;
@@ -34,6 +36,8 @@ fwd table.find_table;
 fwd head.Head;
 fwd head.parse_head;
 fwd maxp.num_glyphs;
+fwd maxp.Maxima;
+fwd maxp.storage_maxima;
 fwd hhea.Hhea;
 fwd hhea.parse_hhea;
 fwd hmtx.metrics;
@@ -46,10 +50,21 @@ fwd loca.glyph_range;
 fwd glyf.Point;
 fwd glyf.GlyphInfo;
 fwd glyf.Outline;
+fwd glyf.Xform;
+fwd glyf.Component;
 fwd glyf.glyph_header;
 fwd glyf.is_composite;
 fwd glyf.point_count;
 fwd glyf.extract_simple;
+fwd glyf.read_component;
+fwd glyf.xform_identity;
+fwd glyf.xform_compose;
+fwd glyf.xform_apply;
+
+# kern's subtable selection and pair lookup carry the table name into the flat
+# surface, where cmap already holds the unqualified spellings.
+fwd kern_select_subtable: kern.select_subtable;
+fwd kern_lookup: kern.lookup;
 
 fwd raster.Edge;
 fwd raster.flatten;
@@ -58,7 +73,9 @@ fwd raster.fill;
 fwd info.Font;
 fwd info.init;
 fwd info.glyph_hmetrics;
+fwd info.glyph_kern_advance;
 fwd info.glyph_index;
 fwd info.glyph_outline;
+fwd info.outline_maxima;
 fwd info.scale_for_pixel_height;
 fwd info.render_glyph;
