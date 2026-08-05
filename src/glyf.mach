@@ -524,3 +524,229 @@ test "glyf: composite rejected by extract" {
     if (extract_simple(?glyph_buf[0], 64, 0, ?tri_pts[0], 8, ?tri_ends[0], 4, ?o)) { ret 1; }
     ret 0;
 }
+
+# dejavu sans (2048 units per em) verbatim: the 24 bytes of `dotbelowcomb`, a
+# one-contour rectangle whose coordinate encoding uses an i16 delta, a positive
+# short, a same-as-previous, and a negative short on each axis
+var real_simple: [24]u8 = [24]u8{
+    0x00, 0x01, 0xFD, 0xA2, 0xFE, 0x89, 0xFE, 0x5A,
+    0xFF, 0x73, 0x00, 0x03, 0x00, 0x00, 0x05, 0x33,
+    0x15, 0x23, 0xFD, 0xA2, 0xB8, 0xB8, 0x8D, 0xEA
+};
+
+# dejavu sans verbatim: the 24 bytes of `uni1E37` (l with dot below), a composite
+# of `dotbelowcomb` at x+807 and `l` at x+11
+var real_composite: [24]u8 = [24]u8{
+    0xFF, 0xFF, 0x00, 0xC9, 0xFE, 0x89, 0x01, 0x84,
+    0x06, 0x14, 0x10, 0x27, 0x02, 0xD4, 0x03, 0x27,
+    0x00, 0x00, 0x10, 0x06, 0x00, 0x4F, 0x0B, 0x00
+};
+
+test "glyf: real font simple glyph bytes" {
+    var o: Outline;
+    if (!extract_simple(?real_simple[0], 24, 0, ?tri_pts[0], 8, ?tri_ends[0], 4, ?o)) { ret 1; }
+    if (o.num_contours != 1 || o.num_points != 4) { ret 1; }
+    if (tri_ends[0] != 3) { ret 1; }
+    if (tri_pts[0].x != -606 || tri_pts[0].y != -141) { ret 1; }
+    if (tri_pts[1].x != -422 || tri_pts[1].y != -141) { ret 1; }
+    if (tri_pts[2].x != -422 || tri_pts[2].y != -375) { ret 1; }
+    if (tri_pts[3].x != -606 || tri_pts[3].y != -375) { ret 1; }
+    ret 0;
+}
+
+test "glyf: real font composite component records" {
+    val p: *u8 = ?real_composite[0];
+    var info: GlyphInfo;
+    if (!glyph_header(p, 24, 0, ?info)) { ret 1; }
+    if (!is_composite(?info)) { ret 1; }
+    if (info.x_min != 201 || info.y_min != -375) { ret 1; }
+    if (info.x_max != 388 || info.y_max != 1556) { ret 1; }
+
+    # word args, so the record runs 8 bytes
+    var c: Component;
+    var next: usize = 0;
+    if (!read_component(p, 24, COMPONENTS_OFFSET, ?c, ?next)) { ret 1; }
+    if (next != 18) { ret 1; }
+    if (c.glyph != 724) { ret 1; }
+    if ((c.flags & ARG_1_AND_2_ARE_WORDS) == 0) { ret 1; }
+    if ((c.flags & MORE_COMPONENTS) == 0) { ret 1; }
+    if (c.m.dx != 807.0 || c.m.dy != 0.0) { ret 1; }
+    # an absent transform leaves the identity 2x2
+    if (c.m.a != 1.0 || c.m.b != 0.0 || c.m.c != 0.0 || c.m.d != 1.0) { ret 1; }
+
+    # byte args, so the record runs 6 bytes and ends the chain
+    if (!read_component(p, 24, next, ?c, ?next)) { ret 1; }
+    if (next != 24) { ret 1; }
+    if (c.glyph != 79) { ret 1; }
+    if ((c.flags & ARG_1_AND_2_ARE_WORDS) != 0) { ret 1; }
+    if ((c.flags & MORE_COMPONENTS) != 0) { ret 1; }
+    if (c.m.dx != 11.0 || c.m.dy != 0.0) { ret 1; }
+    ret 0;
+}
+
+# no font on this system places a component with a scale, so the transform
+# variants are exercised against records built here rather than lifted from one
+var comp_buf: [32]u8;
+
+# a component record: flags, glyph index, then two i16 args
+fun build_component(flags: u16, glyph: u16, arg1: u16, arg2: u16) {
+    val p: *u8 = ?comp_buf[0];
+    w16(p, 0, flags | ARG_1_AND_2_ARE_WORDS);
+    w16(p, 2, glyph);
+    w16(p, 4, arg1);
+    w16(p, 6, arg2);
+}
+
+test "glyf: component single scale" {
+    build_component(ARGS_ARE_XY_VALUES | WE_HAVE_A_SCALE, 7, 30, 40);
+    w16(?comp_buf[0], 8, 0x2000);   # F2Dot14 0.5
+    var c: Component;
+    var next: usize = 0;
+    if (!read_component(?comp_buf[0], 32, 0, ?c, ?next)) { ret 1; }
+    if (next != 10) { ret 1; }
+    if (c.glyph != 7) { ret 1; }
+    if (c.m.a != 0.5 || c.m.d != 0.5) { ret 1; }
+    if (c.m.b != 0.0 || c.m.c != 0.0) { ret 1; }
+    # the offset is in the composite's space by default, so the scale leaves it alone
+    if (c.m.dx != 30.0 || c.m.dy != 40.0) { ret 1; }
+    ret 0;
+}
+
+test "glyf: component x and y scale" {
+    build_component(ARGS_ARE_XY_VALUES | WE_HAVE_AN_X_AND_Y_SCALE, 7, 0, 0);
+    w16(?comp_buf[0], 8, 0x2000);    # x scale 0.5
+    w16(?comp_buf[0], 10, 0xC000);   # y scale -1.0
+    var c: Component;
+    var next: usize = 0;
+    if (!read_component(?comp_buf[0], 32, 0, ?c, ?next)) { ret 1; }
+    if (next != 12) { ret 1; }
+    if (c.m.a != 0.5 || c.m.d != -1.0) { ret 1; }
+    if (c.m.b != 0.0 || c.m.c != 0.0) { ret 1; }
+    ret 0;
+}
+
+test "glyf: component two by two" {
+    build_component(ARGS_ARE_XY_VALUES | WE_HAVE_A_TWO_BY_TWO, 7, 0, 0);
+    w16(?comp_buf[0], 8, 0x4000);    # a = 1.0
+    w16(?comp_buf[0], 10, 0x1000);   # b = 0.25
+    w16(?comp_buf[0], 12, 0xE000);   # c = -0.5
+    w16(?comp_buf[0], 14, 0x2000);   # d = 0.5
+    var c: Component;
+    var next: usize = 0;
+    if (!read_component(?comp_buf[0], 32, 0, ?c, ?next)) { ret 1; }
+    if (next != 16) { ret 1; }
+    if (c.m.a != 1.0 || c.m.b != 0.25) { ret 1; }
+    if (c.m.c != -0.5 || c.m.d != 0.5) { ret 1; }
+    ret 0;
+}
+
+test "glyf: component byte args are signed offsets" {
+    val p: *u8 = ?comp_buf[0];
+    w16(p, 0, ARGS_ARE_XY_VALUES);
+    w16(p, 2, 7);
+    comp_buf[4] = 0xF6;   # -10
+    comp_buf[5] = 0x14;   # +20
+    var c: Component;
+    var next: usize = 0;
+    if (!read_component(p, 32, 0, ?c, ?next)) { ret 1; }
+    if (next != 6) { ret 1; }
+    if (c.m.dx != -10.0 || c.m.dy != 20.0) { ret 1; }
+    ret 0;
+}
+
+test "glyf: component point indices left unscaled" {
+    # without ARGS_ARE_XY_VALUES the args are point indices, reported verbatim
+    build_component(WE_HAVE_A_SCALE, 7, 12, 34);
+    w16(?comp_buf[0], 8, 0x2000);
+    var c: Component;
+    var next: usize = 0;
+    if (!read_component(?comp_buf[0], 32, 0, ?c, ?next)) { ret 1; }
+    if ((c.flags & ARGS_ARE_XY_VALUES) != 0) { ret 1; }
+    if (c.m.dx != 12.0 || c.m.dy != 34.0) { ret 1; }
+    ret 0;
+}
+
+test "glyf: component scaled offset and grid rounding" {
+    # a scaled offset passes through the 2x2, putting it on a half unit
+    build_component(ARGS_ARE_XY_VALUES | WE_HAVE_A_SCALE | SCALED_COMPONENT_OFFSET, 7, 25, 0xFFF7);
+    w16(?comp_buf[0], 8, 0x2000);   # 0.5
+    var c: Component;
+    var next: usize = 0;
+    if (!read_component(?comp_buf[0], 32, 0, ?c, ?next)) { ret 1; }
+    if (c.m.dx != 12.5 || c.m.dy != -4.5) { ret 1; }
+
+    # ROUND_XY_TO_GRID snaps it to whole design units, halves away from zero
+    build_component(ARGS_ARE_XY_VALUES | WE_HAVE_A_SCALE | SCALED_COMPONENT_OFFSET | ROUND_XY_TO_GRID, 7, 25, 0xFFF7);
+    w16(?comp_buf[0], 8, 0x2000);
+    if (!read_component(?comp_buf[0], 32, 0, ?c, ?next)) { ret 1; }
+    if (c.m.dx != 13.0 || c.m.dy != -5.0) { ret 1; }
+
+    # UNSCALED_COMPONENT_OFFSET wins over SCALED_COMPONENT_OFFSET
+    build_component(ARGS_ARE_XY_VALUES | WE_HAVE_A_SCALE | SCALED_COMPONENT_OFFSET | UNSCALED_COMPONENT_OFFSET, 7, 25, 0xFFF7);
+    w16(?comp_buf[0], 8, 0x2000);
+    if (!read_component(?comp_buf[0], 32, 0, ?c, ?next)) { ret 1; }
+    if (c.m.dx != 25.0 || c.m.dy != -9.0) { ret 1; }
+    ret 0;
+}
+
+test "glyf: component record past the buffer rejected" {
+    build_component(ARGS_ARE_XY_VALUES | WE_HAVE_A_TWO_BY_TWO, 7, 0, 0);
+    var c: Component;
+    var next: usize = 0;
+    # the record needs 16 bytes; the 2x2 runs past a 12-byte buffer
+    if (read_component(?comp_buf[0], 12, 0, ?c, ?next)) { ret 1; }
+    ret 0;
+}
+
+var xf_pts: [4]Point;
+
+test "glyf: transform scales and translates points" {
+    xf_pts[0] = Point{ x: 0,   y: 0,   on_curve: true };
+    xf_pts[1] = Point{ x: 100, y: 0,   on_curve: true };
+    xf_pts[2] = Point{ x: 100, y: 100, on_curve: true };
+    xf_pts[3] = Point{ x: 0,   y: 100, on_curve: true };
+    val m: Xform = Xform{ a: 0.5, b: 0.0, c: 0.0, d: 0.5, dx: 100.0, dy: -50.0 };
+    xform_apply(?m, ?xf_pts[0], 4);
+    if (xf_pts[0].x != 100 || xf_pts[0].y != -50) { ret 1; }
+    if (xf_pts[1].x != 150 || xf_pts[1].y != -50) { ret 1; }
+    if (xf_pts[2].x != 150 || xf_pts[2].y != 0) { ret 1; }
+    if (xf_pts[3].x != 100 || xf_pts[3].y != 0) { ret 1; }
+    ret 0;
+}
+
+test "glyf: identity leaves points alone" {
+    xf_pts[0] = Point{ x: -606, y: -141, on_curve: true };
+    var m: Xform;
+    xform_identity(?m);
+    xform_apply(?m, ?xf_pts[0], 1);
+    if (xf_pts[0].x != -606 || xf_pts[0].y != -141) { ret 1; }
+    ret 0;
+}
+
+test "glyf: compose applies inner then outer" {
+    # inner halves and shifts right, outer translates up
+    val inner: Xform = Xform{ a: 0.5, b: 0.0, c: 0.0, d: 0.5, dx: 40.0, dy: 0.0 };
+    val outer: Xform = Xform{ a: 1.0, b: 0.0, c: 0.0, d: 1.0, dx: 0.0, dy: 10.0 };
+    var m: Xform;
+    xform_compose(?outer, ?inner, ?m);
+    if (m.a != 0.5 || m.d != 0.5) { ret 1; }
+    if (m.dx != 40.0 || m.dy != 10.0) { ret 1; }
+
+    xf_pts[0] = Point{ x: 100, y: 100, on_curve: true };
+    xform_apply(?m, ?xf_pts[0], 1);
+    if (xf_pts[0].x != 90 || xf_pts[0].y != 60) { ret 1; }
+
+    # the outer scale must reach the inner translation too
+    val scale2: Xform = Xform{ a: 2.0, b: 0.0, c: 0.0, d: 2.0, dx: 0.0, dy: 0.0 };
+    xform_compose(?scale2, ?inner, ?m);
+    if (m.a != 1.0 || m.dx != 80.0) { ret 1; }
+    ret 0;
+}
+
+test "glyf: transformed points saturate at the coordinate range" {
+    xf_pts[0] = Point{ x: 30000, y: -30000, on_curve: true };
+    val m: Xform = Xform{ a: 2.0, b: 0.0, c: 0.0, d: 2.0, dx: 0.0, dy: 0.0 };
+    xform_apply(?m, ?xf_pts[0], 1);
+    if (xf_pts[0].x != 32767 || xf_pts[0].y != -32768) { ret 1; }
+    ret 0;
+}
