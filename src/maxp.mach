@@ -1,13 +1,20 @@
 # the maximum profile table
 #
 # `maxp` states the glyph count, which bounds every glyph index and sizes the
-# `loca` array. only the glyph count is needed here; the version 1.0 storage
-# maxima that follow it drive memory sizing in a hinting engine, which is out of
-# scope. the read is bounds-checked through font.read.
+# `loca` array. the version 1.0 table adds storage maxima; the four point and
+# contour bounds are how a caller sizes one set of outline buffers big enough for
+# every glyph in the font, composites included, without walking them all first.
+# the remaining 1.0 fields size a hinting engine's stacks and are out of scope.
+# every read is bounds-checked through font.read.
 
 use font.read;
 use std.types.bool.bool;
+use std.types.bool.true;
+use std.types.bool.false;
 use std.types.size.usize;
+
+# maxp version 1.0, the only version carrying the storage maxima
+val VERSION_1_0: u32 = 0x00010000;
 
 # read the glyph count from the maxp table at off
 #
@@ -23,15 +30,64 @@ pub fun num_glyphs(data: *u8, len: usize, off: usize, out: *u16) bool {
     ret read.read_u16(data, len, off + 4, out);
 }
 
-var maxp_buf: [6]u8;
+# the outline storage maxima a caller sizes buffers from
+# ---
+# max_points:             most points in any simple glyph
+# max_contours:           most contours in any simple glyph
+# max_composite_points:   most points in any composite glyph, components resolved
+# max_composite_contours: most contours in any composite glyph, components resolved
+pub rec Maxima {
+    max_points:             u16;
+    max_contours:           u16;
+    max_composite_points:   u16;
+    max_composite_contours: u16;
+}
+
+# read the outline storage maxima from the maxp table at off
+#
+# a caller that sizes its point and contour buffers to the larger of the simple
+# and composite maxima can extract any glyph in the font without resizing. only
+# version 1.0 declares them, so a 0.5 table reports failure.
+# ---
+# data: pointer to the first byte of the file
+# len:  number of bytes addressable through data
+# off:  byte offset of the maxp table
+# out:  receives the maxima on success
+# ret:  true when the table is version 1.0 and the fields lie within len
+pub fun storage_maxima(data: *u8, len: usize, off: usize, out: *Maxima) bool {
+    var version: u32 = 0;
+    if (!read.read_u32(data, len, off, ?version)) { ret false; }
+    if (version != VERSION_1_0) { ret false; }
+
+    var m: Maxima;
+    if (!read.read_u16(data, len, off + 6, ?m.max_points)) { ret false; }
+    if (!read.read_u16(data, len, off + 8, ?m.max_contours)) { ret false; }
+    if (!read.read_u16(data, len, off + 10, ?m.max_composite_points)) { ret false; }
+    if (!read.read_u16(data, len, off + 12, ?m.max_composite_contours)) { ret false; }
+    out[0] = m;
+    ret true;
+}
+
+fun w16(buf: *u8, off: usize, v: u16) {
+    buf[off]     = (v >> 8)::u8;
+    buf[off + 1] = (v & 0xFF)::u8;
+}
+
+var maxp_buf: [14]u8;
+
+fun build_maxp() {
+    val p: *u8 = ?maxp_buf[0];
+    w16(p, 0, 0x0001);
+    w16(p, 2, 0x0000);   # version 1.0
+    w16(p, 4, 300);      # numGlyphs
+    w16(p, 6, 120);      # maxPoints
+    w16(p, 8, 8);        # maxContours
+    w16(p, 10, 240);     # maxCompositePoints
+    w16(p, 12, 16);      # maxCompositeContours
+}
 
 test "maxp: glyph count" {
-    maxp_buf[0] = 0x00;
-    maxp_buf[1] = 0x01;
-    maxp_buf[2] = 0x00;
-    maxp_buf[3] = 0x00;   # version 1.0
-    maxp_buf[4] = 0x01;
-    maxp_buf[5] = 0x2C;   # numGlyphs = 300
+    build_maxp();
     var n: u16 = 0;
     if (!num_glyphs(?maxp_buf[0], 6, 0, ?n)) { ret 1; }
     if (n != 300) { ret 1; }
@@ -39,7 +95,30 @@ test "maxp: glyph count" {
 }
 
 test "maxp: truncated rejected" {
+    build_maxp();
     var n: u16 = 0;
     if (num_glyphs(?maxp_buf[0], 5, 0, ?n)) { ret 1; }
+    ret 0;
+}
+
+test "maxp: storage maxima" {
+    build_maxp();
+    var m: Maxima;
+    if (!storage_maxima(?maxp_buf[0], 14, 0, ?m)) { ret 1; }
+    if (m.max_points != 120 || m.max_contours != 8) { ret 1; }
+    if (m.max_composite_points != 240 || m.max_composite_contours != 16) { ret 1; }
+    ret 0;
+}
+
+test "maxp: version 0.5 has no maxima" {
+    build_maxp();
+    w16(?maxp_buf[0], 0, 0x0000);
+    w16(?maxp_buf[0], 2, 0x5000);   # version 0.5
+    var m: Maxima;
+    if (storage_maxima(?maxp_buf[0], 14, 0, ?m)) { ret 1; }
+    # the glyph count still reads, at the same offset in either version
+    var n: u16 = 0;
+    if (!num_glyphs(?maxp_buf[0], 14, 0, ?n)) { ret 1; }
+    if (n != 300) { ret 1; }
     ret 0;
 }

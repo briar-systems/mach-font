@@ -1,0 +1,271 @@
+# the kerning table
+#
+# `kern` holds the per-pair spacing corrections a layout applies between two
+# adjacent glyphs — the pre-GPOS mechanism, and still the only kerning many
+# truetype fonts carry. the table is a version-0 header naming a subtable count,
+# followed by subtables that each declare their own format and axis in a coverage
+# word. format 0 is the pair-array format: a list of (left, right, value) triples
+# sorted by the packed (left, right) key, so a pair resolves by binary search.
+#
+# this module selects the first subtable that is format 0 and plainly horizontal,
+# then resolves pairs from it. apple's `kern` variant opens with a 32-bit version
+# and carries different subtable headers, so the version check rejects it rather
+# than misreading its fields. every read is bounds-checked through font.read.
+
+use font.read;
+use std.types.bool.bool;
+use std.types.bool.true;
+use std.types.bool.false;
+use std.types.size.usize;
+
+# bytes in a subtable header: version, length, coverage
+val SUBTABLE_HEADER: usize = 6;
+# bytes between a format-0 subtable header and its pair array: nPairs plus the
+# three binary-search hint fields, which are recomputed here rather than trusted
+val FORMAT0_HEADER: usize = 8;
+# bytes in one pair entry: left, right, value
+val PAIR_SIZE: usize = 6;
+
+# coverage low-byte flags
+val COVERAGE_HORIZONTAL: u16 = 0x01;
+val COVERAGE_MINIMUM: u16 = 0x02;
+val COVERAGE_CROSS_STREAM: u16 = 0x04;
+
+# locate the pair array of the font's horizontal format-0 kerning subtable
+#
+# walks the subtable chain and takes the first subtable that kerns horizontally in
+# format 0 and states plain adjustments — a minimum-value or cross-stream subtable
+# means something else and is skipped. the whole pair array is checked against the
+# buffer here, so a later lookup searches it without re-validating its span.
+# reports failure when the table is not the version-0 layout, when no such
+# subtable exists, or when one is truncated.
+# ---
+# data:          pointer to the first byte of the file
+# len:           number of bytes addressable through data
+# off:           byte offset of the kern table
+# out_pairs:     receives the byte offset of the pair array
+# out_num_pairs: receives the number of pairs in it
+# ret:           true when a usable subtable was found, false otherwise
+pub fun select_subtable(data: *u8, len: usize, off: usize, out_pairs: *usize, out_num_pairs: *u16) bool {
+    var version: u16 = 0;
+    if (!read.read_u16(data, len, off, ?version)) { ret false; }
+    if (version != 0) { ret false; }
+
+    var num_tables: u16 = 0;
+    if (!read.read_u16(data, len, off + 2, ?num_tables)) { ret false; }
+
+    var sub: usize = off + 4;
+    var i: u16 = 0;
+    for (i < num_tables) {
+        var sub_len:  u16 = 0;
+        var coverage: u16 = 0;
+        if (!read.read_u16(data, len, sub + 2, ?sub_len)) { ret false; }
+        if (!read.read_u16(data, len, sub + 4, ?coverage)) { ret false; }
+        # a length that cannot even span its own header would not advance the walk.
+        if (sub_len::usize < SUBTABLE_HEADER) { ret false; }
+
+        # the coverage word carries the format in its high byte and the flags in its low.
+        val format: u16 = coverage >> 8;
+        val flags:  u16 = coverage & 0xFF;
+        val plain:  bool = (flags & COVERAGE_MINIMUM) == 0 && (flags & COVERAGE_CROSS_STREAM) == 0;
+
+        if (format == 0 && (flags & COVERAGE_HORIZONTAL) != 0 && plain) {
+            var num_pairs: u16 = 0;
+            if (!read.read_u16(data, len, sub + SUBTABLE_HEADER, ?num_pairs)) { ret false; }
+            val pairs: usize = sub + SUBTABLE_HEADER + FORMAT0_HEADER;
+            if (pairs + num_pairs::usize * PAIR_SIZE > len) { ret false; }
+            out_pairs[0]     = pairs;
+            out_num_pairs[0] = num_pairs;
+            ret true;
+        }
+
+        sub = sub + sub_len::usize;
+        i   = i + 1;
+    }
+    ret false;
+}
+
+# read one pair entry's packed (left, right) key
+fun pair_key(data: *u8, len: usize, entry: usize, out: *u32) bool {
+    var left:  u16 = 0;
+    var right: u16 = 0;
+    if (!read.read_u16(data, len, entry, ?left)) { ret false; }
+    if (!read.read_u16(data, len, entry + 2, ?right)) { ret false; }
+    out[0] = (left::u32 << 16) | right::u32;
+    ret true;
+}
+
+# resolve the kerning adjustment between two adjacent glyphs
+#
+# the pair array is sorted by the packed (left, right) key, so the entry is found
+# by binary search rather than by the subtable's own search hints, which some
+# fonts write inconsistently. a pair the table does not list is unkerned and
+# yields 0 — the overwhelmingly common case, and not an error.
+# ---
+# data:      pointer to the first byte of the file
+# len:       number of bytes addressable through data
+# pairs:     byte offset of the pair array, from select_subtable
+# num_pairs: number of pairs in the array
+# left:      glyph index of the left-hand glyph
+# right:     glyph index of the right-hand glyph
+# out:       receives the adjustment in font units, 0 when the pair is unkerned
+# ret:       true on a completed search, false on an out-of-range read
+pub fun lookup(data: *u8, len: usize, pairs: usize, num_pairs: u16, left: u16, right: u16, out: *i16) bool {
+    out[0] = 0;
+
+    val key: u32 = (left::u32 << 16) | right::u32;
+    var lo: usize = 0;
+    var hi: usize = num_pairs::usize;
+    for (lo < hi) {
+        val mid:   usize = lo + (hi - lo) / 2;
+        val entry: usize = pairs + mid * PAIR_SIZE;
+        var k: u32 = 0;
+        if (!pair_key(data, len, entry, ?k)) { ret false; }
+
+        if (k < key) { lo = mid + 1; }
+        or (k > key) { hi = mid; }
+        or { ret read.read_i16(data, len, entry + 4, out); }
+    }
+    ret true;
+}
+
+fun w16(buf: *u8, off: usize, v: u16) {
+    buf[off]     = (v >> 8)::u8;
+    buf[off + 1] = (v & 0xFF)::u8;
+}
+
+fun pair(buf: *u8, index: usize, left: u16, right: u16, value: u16) {
+    val at: usize = 18 + index * 6;
+    w16(buf, at, left);
+    w16(buf, at + 2, right);
+    w16(buf, at + 4, value);
+}
+
+# a version-0 table with one horizontal format-0 subtable of 4 pairs
+var kern_buf: [64]u8;
+
+fun build_kern() {
+    val p: *u8 = ?kern_buf[0];
+    w16(p, 0, 0);        # version
+    w16(p, 2, 1);        # nTables
+    w16(p, 4, 0);        # subtable version
+    w16(p, 6, 38);       # subtable length: 6 header + 8 + 4 pairs * 6
+    w16(p, 8, 0x0001);   # coverage: format 0, horizontal
+    w16(p, 10, 4);       # nPairs
+    # searchRange / entrySelector / rangeShift are written but never trusted
+    w16(p, 12, 12);
+    # pairs sorted by (left << 16) | right
+    pair(p, 0, 1, 2, 0xFFB0);   # -80
+    pair(p, 1, 1, 9, 25);
+    pair(p, 2, 3, 4, 0xFFCE);   # -50
+    pair(p, 3, 7, 1, 100);
+}
+
+test "kern: select horizontal format 0 subtable" {
+    build_kern();
+    var pairs: usize = 0;
+    var n: u16 = 0;
+    if (!select_subtable(?kern_buf[0], 64, 0, ?pairs, ?n)) { ret 1; }
+    if (pairs != 18) { ret 1; }
+    if (n != 4) { ret 1; }
+    ret 0;
+}
+
+test "kern: lookup finds every pair" {
+    build_kern();
+    var pairs: usize = 0;
+    var n: u16 = 0;
+    if (!select_subtable(?kern_buf[0], 64, 0, ?pairs, ?n)) { ret 1; }
+    var v: i16 = 0;
+    if (!lookup(?kern_buf[0], 64, pairs, n, 1, 2, ?v)) { ret 1; }
+    if (v != -80) { ret 1; }
+    if (!lookup(?kern_buf[0], 64, pairs, n, 1, 9, ?v)) { ret 1; }
+    if (v != 25) { ret 1; }
+    if (!lookup(?kern_buf[0], 64, pairs, n, 3, 4, ?v)) { ret 1; }
+    if (v != -50) { ret 1; }
+    if (!lookup(?kern_buf[0], 64, pairs, n, 7, 1, ?v)) { ret 1; }
+    if (v != 100) { ret 1; }
+    ret 0;
+}
+
+test "kern: unkerned pair yields zero" {
+    build_kern();
+    var pairs: usize = 0;
+    var n: u16 = 0;
+    if (!select_subtable(?kern_buf[0], 64, 0, ?pairs, ?n)) { ret 1; }
+    var v: i16 = 0;
+    # absent between listed keys, past the end, and before the start
+    if (!lookup(?kern_buf[0], 64, pairs, n, 1, 5, ?v)) { ret 1; }
+    if (v != 0) { ret 1; }
+    if (!lookup(?kern_buf[0], 64, pairs, n, 9, 9, ?v)) { ret 1; }
+    if (v != 0) { ret 1; }
+    if (!lookup(?kern_buf[0], 64, pairs, n, 0, 0, ?v)) { ret 1; }
+    if (v != 0) { ret 1; }
+    # a pair whose glyphs are listed only in the other order does not kern
+    if (!lookup(?kern_buf[0], 64, pairs, n, 2, 1, ?v)) { ret 1; }
+    if (v != 0) { ret 1; }
+    ret 0;
+}
+
+test "kern: vertical and cross-stream subtables skipped" {
+    build_kern();
+    w16(?kern_buf[0], 8, 0x0000);   # format 0, vertical
+    var pairs: usize = 0;
+    var n: u16 = 0;
+    if (select_subtable(?kern_buf[0], 64, 0, ?pairs, ?n)) { ret 1; }
+    w16(?kern_buf[0], 8, 0x0005);   # format 0, horizontal, cross-stream
+    if (select_subtable(?kern_buf[0], 64, 0, ?pairs, ?n)) { ret 1; }
+    w16(?kern_buf[0], 8, 0x0003);   # format 0, horizontal, minimum values
+    if (select_subtable(?kern_buf[0], 64, 0, ?pairs, ?n)) { ret 1; }
+    ret 0;
+}
+
+test "kern: unsupported format skipped" {
+    build_kern();
+    w16(?kern_buf[0], 8, 0x0201);   # format 2, horizontal
+    var pairs: usize = 0;
+    var n: u16 = 0;
+    if (select_subtable(?kern_buf[0], 64, 0, ?pairs, ?n)) { ret 1; }
+    ret 0;
+}
+
+test "kern: apple 32-bit version rejected" {
+    build_kern();
+    w16(?kern_buf[0], 0, 1);   # 0x0001 opens apple's 0x00010000 version
+    var pairs: usize = 0;
+    var n: u16 = 0;
+    if (select_subtable(?kern_buf[0], 64, 0, ?pairs, ?n)) { ret 1; }
+    ret 0;
+}
+
+test "kern: pair array past the buffer rejected" {
+    build_kern();
+    w16(?kern_buf[0], 10, 1000);   # nPairs far beyond the buffer
+    var pairs: usize = 0;
+    var n: u16 = 0;
+    if (select_subtable(?kern_buf[0], 64, 0, ?pairs, ?n)) { ret 1; }
+    ret 0;
+}
+
+test "kern: second subtable reached past the first" {
+    build_kern();
+    w16(?kern_buf[0], 2, 2);        # nTables = 2
+    w16(?kern_buf[0], 8, 0x0000);   # first subtable is vertical
+    w16(?kern_buf[0], 6, 14);       # ... and holds no pairs
+    # a second horizontal format-0 subtable follows it at offset 18
+    w16(?kern_buf[0], 18, 0);       # version
+    w16(?kern_buf[0], 20, 20);      # length: 6 + 8 + 1 pair * 6
+    w16(?kern_buf[0], 22, 0x0001);  # coverage
+    w16(?kern_buf[0], 24, 1);       # nPairs
+    w16(?kern_buf[0], 32, 5);       # left
+    w16(?kern_buf[0], 34, 6);       # right
+    w16(?kern_buf[0], 36, 0xFFEC);  # -20
+    var pairs: usize = 0;
+    var n: u16 = 0;
+    if (!select_subtable(?kern_buf[0], 64, 0, ?pairs, ?n)) { ret 1; }
+    if (pairs != 32 || n != 1) { ret 1; }
+    var v: i16 = 0;
+    if (!lookup(?kern_buf[0], 64, pairs, n, 5, 6, ?v)) { ret 1; }
+    if (v != -20) { ret 1; }
+    ret 0;
+}

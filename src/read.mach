@@ -70,6 +70,24 @@ pub fun read_u32(data: *u8, len: usize, off: usize, out: *u32) bool {
     ret true;
 }
 
+# read a big-endian F2Dot14 fixed-point value at off
+#
+# F2Dot14 is the sfnt fixed-point scalar carrying composite-glyph component
+# transforms: a signed 16-bit value with 14 fractional bits, so 1.0 is stored as
+# 0x4000 and the representable range is [-2, 2).
+# ---
+# data: pointer to the first byte of the file
+# len:  number of bytes addressable through data
+# off:  byte offset to read from
+# out:  receives the value on success
+# ret:  true when [off, off+2) is within len, false otherwise
+pub fun read_f2dot14(data: *u8, len: usize, off: usize, out: *f32) bool {
+    var v: i16 = 0;
+    if (!read_i16(data, len, off, ?v)) { ret false; }
+    out[0] = v::f32 / 16384.0;
+    ret true;
+}
+
 # test whether the four bytes at off equal a table tag
 #
 # table directory entries name a table by a four-byte tag (`glyf`, `cmap`, ...);
@@ -138,6 +156,20 @@ test "read: u32 big-endian" {
     var v: u32 = 0;
     if (!read_u32(?test_buf[0], 8, 0, ?v)) { ret 1; }
     if (v != 0xDEADBEEF) { ret 1; }
+    ret 0;
+}
+
+test "read: f2dot14 unit and fraction" {
+    test_buf[0] = 0x40;
+    test_buf[1] = 0x00;
+    var v: f32 = 0.0;
+    if (!read_f2dot14(?test_buf[0], 8, 0, ?v)) { ret 1; }
+    if (v != 1.0) { ret 1; }
+    # 0xE000 is -0.5: the F2Dot14 unit is 1/16384
+    test_buf[0] = 0xE0;
+    test_buf[1] = 0x00;
+    if (!read_f2dot14(?test_buf[0], 8, 0, ?v)) { ret 1; }
+    if (v != -0.5) { ret 1; }
     ret 0;
 }
 

@@ -17,6 +17,7 @@ use font.hmtx;
 use font.cmap;
 use font.loca;
 use font.glyf;
+use font.kern;
 use font.raster;
 use std.types.bool.bool;
 use std.types.bool.true;
@@ -35,6 +36,9 @@ use std.types.size.usize;
 # glyf_off:            byte offset of the glyf table (0 if absent)
 # cmap_off:            byte offset of the cmap table (0 if absent)
 # cmap_sub:            byte offset of the selected cmap subtable (0 if none)
+# kern_off:            byte offset of the kern table (0 if absent)
+# kern_pairs:          byte offset of the selected kern pair array (0 if none)
+# kern_num_pairs:      number of pairs in that array
 # num_glyphs:          glyph count from maxp
 # units_per_em:        design units per em from head
 # index_to_loc_format: loca offset encoding from head (0 short, 1 long)
@@ -52,6 +56,9 @@ pub rec Font {
     glyf_off:            usize;
     cmap_off:            usize;
     cmap_sub:            usize;
+    kern_off:            usize;
+    kern_pairs:          usize;
+    kern_num_pairs:      u16;
     num_glyphs:          u16;
     units_per_em:        u16;
     index_to_loc_format: i16;
@@ -94,6 +101,9 @@ pub fun init(data: *u8, len: usize, out: *Font) bool {
     f.glyf_off = locate(data, len, 'g', 'l', 'y', 'f');
     f.cmap_off = locate(data, len, 'c', 'm', 'a', 'p');
     f.cmap_sub = 0;
+    f.kern_off = locate(data, len, 'k', 'e', 'r', 'n');
+    f.kern_pairs     = 0;
+    f.kern_num_pairs = 0;
 
     if (f.head_off == 0) { ret false; }
     if (f.maxp_off == 0) { ret false; }
@@ -125,6 +135,17 @@ pub fun init(data: *u8, len: usize, out: *Font) bool {
         }
     }
 
+    # kerning is optional in the same way: most fonts carry none, and one whose
+    # kern table holds no horizontal format-0 subtable simply kerns nothing.
+    if (f.kern_off != 0) {
+        var pairs: usize = 0;
+        var n:     u16   = 0;
+        if (kern.select_subtable(data, len, f.kern_off, ?pairs, ?n)) {
+            f.kern_pairs     = pairs;
+            f.kern_num_pairs = n;
+        }
+    }
+
     out[0] = f;
     ret true;
 }
@@ -145,6 +166,24 @@ pub fun glyph_hmetrics(f: *Font, glyph: u16, out_advance: *u16, out_lsb: *i16) b
     ret hmtx.metrics(f.data, f.len, f.hmtx_off, f.num_h_metrics, f.num_glyphs, glyph, out_advance, out_lsb);
 }
 
+# read the kerning correction applied between two adjacent glyphs
+#
+# a convenience over font.kern using the handle's selected pair array. the value
+# adds to the left glyph's advance width, so a negative value tucks the pair
+# closer together. a pair the font does not kern yields 0. reports failure when
+# the font carries no usable horizontal format-0 kern subtable, which is how a
+# caller distinguishes "this font does not kern" from "this pair is unkerned".
+# ---
+# f:     prepared font handle
+# left:  glyph index of the left-hand glyph
+# right: glyph index of the right-hand glyph
+# out:   receives the correction in font units, 0 when the pair is unkerned
+# ret:   true on a completed lookup, false when the font has no kerning
+pub fun glyph_kern_advance(f: *Font, left: u16, right: u16, out: *i16) bool {
+    if (f.kern_pairs == 0) { ret false; }
+    ret kern.lookup(f.data, f.len, f.kern_pairs, f.kern_num_pairs, left, right, out);
+}
+
 # map a unicode codepoint to a glyph index through the selected cmap subtable
 #
 # a convenience over font.cmap using the handle's selected subtable. an unmapped
@@ -160,12 +199,87 @@ pub fun glyph_index(f: *Font, codepoint: u32, out: *u16) bool {
     ret cmap.lookup(f.data, f.len, f.cmap_sub, codepoint, out);
 }
 
+# how deeply composite glyphs may nest before a reference chain is rejected
+#
+# real fonts nest a level or two — an accented letter built from a letter and a
+# mark, occasionally over an already-accented letter. a chain longer than this is
+# either malformed or cyclic, and the cap is what turns a self-referencing glyph
+# into a clean rejection instead of unbounded recursion.
+val MAX_COMPOSITE_DEPTH: usize = 5;
+
+# append one glyph's outline to the buffers under an accumulated transform
+#
+# a simple glyph extracts straight into the free tail of the buffers, has the
+# transform applied, and has its contour ends biased past the points already
+# written. a composite glyph instead walks its component records, composing each
+# component's placement onto the running transform and recursing.
+fun compose(f: *Font, glyph: u16, m: *glyf.Xform, depth: usize, pts: *glyf.Point, pts_cap: usize, ends: *u16, ends_cap: usize, io: *glyf.Outline) bool {
+    if (depth > MAX_COMPOSITE_DEPTH) { ret false; }
+    if (glyph >= f.num_glyphs) { ret false; }
+
+    var start: u32 = 0;
+    var end:   u32 = 0;
+    if (!loca.glyph_range(f.data, f.len, f.loca_off, f.index_to_loc_format, glyph, ?start, ?end)) { ret false; }
+    # an empty glyph contributes nothing, whether it is the whole request or a component.
+    if (start == end) { ret true; }
+
+    val goff: usize = f.glyf_off + start::usize;
+    var info: glyf.GlyphInfo;
+    if (!glyf.glyph_header(f.data, f.len, goff, ?info)) { ret false; }
+
+    if (!glyf.is_composite(?info)) {
+        val base_pts:  usize = io.num_points::usize;
+        val base_ends: usize = io.num_contours::usize;
+        if (base_pts > pts_cap || base_ends > ends_cap) { ret false; }
+
+        var sub: glyf.Outline;
+        if (!glyf.extract_simple(f.data, f.len, goff, ?pts[base_pts], pts_cap - base_pts, ?ends[base_ends], ends_cap - base_ends, ?sub)) { ret false; }
+        if (base_pts + sub.num_points::usize > 0xFFFF) { ret false; }
+
+        glyf.xform_apply(m, ?pts[base_pts], sub.num_points::usize);
+
+        var i: usize = 0;
+        for (i < sub.num_contours::usize) {
+            ends[base_ends + i] = ends[base_ends + i] + base_pts::u16;
+            i = i + 1;
+        }
+
+        io.num_points   = io.num_points + sub.num_points;
+        io.num_contours = io.num_contours + sub.num_contours;
+        ret true;
+    }
+
+    var off: usize = goff + glyf.COMPONENTS_OFFSET;
+    var more: bool = true;
+    for (more) {
+        var c: glyf.Component;
+        var next: usize = 0;
+        if (!glyf.read_component(f.data, f.len, off, ?c, ?next)) { ret false; }
+        # point-matched placement aligns a component by point index rather than an
+        # offset; it is not resolved here, so such a glyph is rejected outright.
+        if ((c.flags & glyf.ARGS_ARE_XY_VALUES) == 0) { ret false; }
+
+        var child: glyf.Xform;
+        glyf.xform_compose(m, ?c.m, ?child);
+        if (!compose(f, c.glyph, ?child, depth + 1, pts, pts_cap, ends, ends_cap, io)) { ret false; }
+
+        more = (c.flags & glyf.MORE_COMPONENTS) != 0;
+        off  = next;
+    }
+    ret true;
+}
+
 # extract a glyph's outline into caller-provided buffers
 #
-# resolves the glyph's data range through loca, then extracts its simple-glyph
-# contours through glyf. an empty glyph (no outline, e.g. a space) succeeds with
-# zero counts. reports failure when loca or glyf is absent, the glyph is out of
-# range or composite, or a buffer is too small.
+# resolves the glyph's data range through loca and extracts its contours through
+# glyf. a composite glyph is resolved recursively: each component's outline is
+# appended under the component's transform, so the result is one flat point and
+# contour list a rasterizer consumes exactly like a simple glyph's. an empty glyph
+# (no outline, e.g. a space) succeeds with zero counts. reports failure when loca
+# or glyf is absent, the glyph is out of range, a buffer is too small, or a
+# composite nests past MAX_COMPOSITE_DEPTH — which is how a cyclic reference is
+# caught. sizing the buffers from maxp's storage maxima admits every glyph in the
+# font.
 # ---
 # f:        prepared font handle
 # glyph:    glyph index to extract
@@ -179,17 +293,23 @@ pub fun glyph_outline(f: *Font, glyph: u16, pts: *glyf.Point, pts_cap: usize, en
     if (f.loca_off == 0 || f.glyf_off == 0) { ret false; }
     if (glyph >= f.num_glyphs) { ret false; }
 
-    var start: u32 = 0;
-    var end:   u32 = 0;
-    if (!loca.glyph_range(f.data, f.len, f.loca_off, f.index_to_loc_format, glyph, ?start, ?end)) { ret false; }
+    var m: glyf.Xform;
+    glyf.xform_identity(?m);
+    out[0] = glyf.Outline{ num_contours: 0, num_points: 0 };
+    ret compose(f, glyph, ?m, 0, pts, pts_cap, ends, ends_cap, out);
+}
 
-    if (start == end) {
-        out[0] = glyf.Outline{ num_contours: 0, num_points: 0 };
-        ret true;
-    }
-
-    val goff: usize = f.glyf_off + start::usize;
-    ret glyf.extract_simple(f.data, f.len, goff, pts, pts_cap, ends, ends_cap, out);
+# read the point and contour bounds that size outline buffers for this font
+#
+# a convenience over font.maxp: buffers sized to the larger of the simple and
+# composite maxima admit glyph_outline for any glyph in the font. reports failure
+# when the font's maxp is the 0.5 version, which declares no maxima.
+# ---
+# f:   prepared font handle
+# out: receives the maxima on success
+# ret: true when the font declares storage maxima, false otherwise
+pub fun outline_maxima(f: *Font, out: *maxp.Maxima) bool {
+    ret maxp.storage_maxima(f.data, f.len, f.maxp_off, out);
 }
 
 # compute the scale that maps the font's design space to a target pixel height
@@ -212,10 +332,11 @@ pub fun scale_for_pixel_height(f: *Font, pixels: f32) f32 {
 # extracts the glyph outline, flattens its curves, and fills the bitmap with the
 # glyph placed against its own bounding box: the glyph's lower-left corner maps to
 # the bitmap's lower-left. every pixel is written, so the bitmap need not be
-# pre-cleared. an empty glyph clears the bitmap to zero. the caller sizes the
-# points, contour-ends, and edges scratch buffers. reports failure when loca or
-# glyf is absent, the glyph is out of range or composite, or a scratch buffer is
-# too small.
+# pre-cleared. an empty glyph clears the bitmap to zero. a composite glyph renders
+# like any other: its components are composed into one outline first. the caller
+# sizes the points, contour-ends, and edges scratch buffers. reports failure when
+# loca or glyf is absent, the glyph is out of range, or a scratch buffer is too
+# small.
 # ---
 # f:         prepared font handle
 # glyph:     glyph index to render
@@ -462,5 +583,325 @@ test "info: truncated font rejected" {
     var f: Font;
     # the directory claims 7 tables but only a few bytes are present
     if (init(?font_buf[0], 20, ?f)) { ret 1; }
+    ret 0;
+}
+
+# a second font carrying dejavu sans' composite geometry: the glyphs, component
+# offsets, kerning values and metrics below are that font's real numbers at its
+# 2048 units per em, cross-checked against an independent resolution of the same
+# outlines. only the glyph indices are renumbered, so six glyphs stand in for
+# dejavu's several thousand:
+#
+#   1  dotbelowcomb    simple, one rectangular contour
+#   2  l               simple, one rectangular contour
+#   3  uni1E37         composite: dotbelowcomb at x+807, l at x+11
+#   4  macron          simple, one rectangular contour
+#   5  uni1E39         composite: macron at (-216, +315), uni1E37 at the origin
+#
+# glyph 5 nests a composite inside a composite, which is what exercises the
+# recursive walk past one level.
+var dv_buf: [512]u8;
+
+# byte offset of the first composite glyph within dv_buf
+val DV_G3: usize = 376;
+
+# write a one-contour rectangle glyph: 34 bytes, all points on-curve, every
+# coordinate an i16 delta
+fun rect_glyph(p: *u8, at: usize, x0: i16, y0: i16, x1: i16, y1: i16) {
+    w16(p, at, 1);
+    w16(p, at + 2, x0:~u16);
+    w16(p, at + 4, y0:~u16);
+    w16(p, at + 6, x1:~u16);
+    w16(p, at + 8, y1:~u16);
+    w16(p, at + 10, 3);            # endPtsOfContours[0]
+    w16(p, at + 12, 0);            # instructionLength
+    p[at + 14] = 0x01;             # every point on-curve with i16 deltas
+    p[at + 15] = 0x01;
+    p[at + 16] = 0x01;
+    p[at + 17] = 0x01;
+    w16(p, at + 18, x0:~u16);      # x deltas, walking the rectangle
+    w16(p, at + 20, (x1 - x0):~u16);
+    w16(p, at + 22, 0);
+    w16(p, at + 24, (x0 - x1):~u16);
+    w16(p, at + 26, y1:~u16);      # y deltas
+    w16(p, at + 28, 0);
+    w16(p, at + 30, (y0 - y1):~u16);
+    w16(p, at + 32, 0);
+}
+
+fun build_dejavu() {
+    val p: *u8 = ?dv_buf[0];
+
+    w32(p, 0, 0x00010000);
+    w16(p, 4, 7);            # numTables
+
+    tag(p, 12,  'g', 'l', 'y', 'f'); w32(p, 20,  308); w32(p, 24,  150);
+    tag(p, 28,  'h', 'e', 'a', 'd'); w32(p, 36,  124); w32(p, 40,  54);
+    tag(p, 44,  'h', 'h', 'e', 'a'); w32(p, 52,  192); w32(p, 56,  36);
+    tag(p, 60,  'h', 'm', 't', 'x'); w32(p, 68,  228); w32(p, 72,  24);
+    tag(p, 76,  'k', 'e', 'r', 'n'); w32(p, 84,  266); w32(p, 88,  42);
+    tag(p, 92,  'l', 'o', 'c', 'a'); w32(p, 100, 252); w32(p, 104, 14);
+    tag(p, 108, 'm', 'a', 'x', 'p'); w32(p, 116, 178); w32(p, 120, 14);
+
+    # head @124
+    dv_buf[124 + 12] = 0x5F;
+    dv_buf[124 + 13] = 0x0F;
+    dv_buf[124 + 14] = 0x3C;
+    dv_buf[124 + 15] = 0xF5;
+    w16(p, 124 + 18, 2048);      # units_per_em
+    w16(p, 124 + 50, 0);         # index_to_loc_format = short
+
+    # maxp @178
+    w32(p, 178, 0x00010000);
+    w16(p, 178 + 4, 6);          # numGlyphs
+    w16(p, 178 + 6, 4);          # maxPoints
+    w16(p, 178 + 8, 1);          # maxContours
+    w16(p, 178 + 10, 12);        # maxCompositePoints
+    w16(p, 178 + 12, 3);         # maxCompositeContours
+
+    # hhea @192
+    w16(p, 192 + 4, 1901);       # ascent
+    w16(p, 192 + 6, 0xFE1D);     # descent = -483
+    w16(p, 192 + 34, 6);         # num_h_metrics
+
+    # hmtx @228: only glyph 3 carries dejavu's own advance and bearing
+    w16(p, 228 + 0, 1024); w16(p, 228 + 2, 0);
+    w16(p, 228 + 4, 0);    w16(p, 228 + 6, 0xFDA2);
+    w16(p, 228 + 8, 569);  w16(p, 228 + 10, 193);
+    w16(p, 228 + 12, 589); w16(p, 228 + 14, 201);
+    w16(p, 228 + 16, 1024); w16(p, 228 + 18, 213);
+    w16(p, 228 + 20, 589); w16(p, 228 + 22, 0xFFFD);
+
+    # loca @252: short offsets, halved. glyph 0 is empty
+    w16(p, 252, 0);
+    w16(p, 254, 0);
+    w16(p, 256, 17);     # 34
+    w16(p, 258, 34);     # 68
+    w16(p, 260, 46);     # 92
+    w16(p, 262, 63);     # 126
+    w16(p, 264, 75);     # 150
+
+    # kern @266: one horizontal format-0 subtable of four real dejavu pairs
+    w16(p, 266, 0);          # version
+    w16(p, 268, 1);          # nTables
+    w16(p, 270, 0);          # subtable version
+    w16(p, 272, 38);         # subtable length
+    w16(p, 274, 0x0001);     # coverage: format 0, horizontal
+    w16(p, 276, 4);          # nPairs
+    w16(p, 278, 24);         # searchRange
+    w16(p, 280, 2);          # entrySelector
+    w16(p, 282, 0);          # rangeShift
+    w16(p, 284, 16);  w16(p, 286, 36);  w16(p, 288, 0xFFD3);   # hyphen, A: -45
+    w16(p, 290, 134); w16(p, 292, 90);  w16(p, 294, 0xFFAD);   # Adieresis, w: -83
+    w16(p, 296, 134); w16(p, 298, 92);  w16(p, 300, 0xFF75);   # Adieresis, y: -139
+    w16(p, 302, 134); w16(p, 304, 109); w16(p, 306, 0xFFB7);   # Adieresis, guillemotleft: -73
+
+    # glyf @308
+    rect_glyph(p, 308, -606, -375, -422, -141);   # glyph 1: dotbelowcomb
+    rect_glyph(p, 342, 193, 0, 377, 1556);        # glyph 2: l
+    rect_glyph(p, 400, 213, 1378, 811, 1526);     # glyph 4: macron
+
+    # glyph 3 @376: composite of dotbelowcomb and l
+    w16(p, 376, 0xFFFF);     # numberOfContours = -1
+    w16(p, 378, 201);        # xMin
+    w16(p, 380, 0xFE89);     # yMin = -375
+    w16(p, 382, 388);        # xMax
+    w16(p, 384, 1556);       # yMax
+    w16(p, 386, 0x1027);     # words, xy values, round to grid, more, unscaled offset
+    w16(p, 388, 1);          # component glyph
+    w16(p, 390, 807);        # x offset
+    w16(p, 392, 0);          # y offset
+    w16(p, 394, 0x1006);     # bytes, xy values, round to grid, unscaled offset
+    w16(p, 396, 2);          # component glyph
+    dv_buf[398] = 11;        # x offset
+    dv_buf[399] = 0;         # y offset
+
+    # glyph 5 @434: composite of macron and the composite glyph 3
+    w16(p, 434, 0xFFFF);
+    w16(p, 436, 0xFFFD);     # xMin = -3
+    w16(p, 438, 0xFE89);     # yMin = -375
+    w16(p, 440, 595);        # xMax
+    w16(p, 442, 1841);       # yMax
+    w16(p, 444, 0x1027);
+    w16(p, 446, 4);          # component glyph: macron
+    w16(p, 448, 0xFF28);     # x offset = -216
+    w16(p, 450, 315);        # y offset
+    w16(p, 452, 0x1006);
+    w16(p, 454, 3);          # component glyph: the composite
+    dv_buf[456] = 0;
+    dv_buf[457] = 0;
+}
+
+var dv_pts: [16]glyf.Point;
+var dv_ends: [4]u16;
+var dv_edges: [128]raster.Edge;
+var dv_bmp: [80]u8;
+
+test "info: composite outline composes its components" {
+    build_dejavu();
+    var f: Font;
+    if (!init(?dv_buf[0], 512, ?f)) { ret 1; }
+    if (f.units_per_em != 2048) { ret 1; }
+
+    var o: glyf.Outline;
+    if (!glyph_outline(?f, 3, ?dv_pts[0], 16, ?dv_ends[0], 4, ?o)) { ret 1; }
+    if (o.num_contours != 2 || o.num_points != 8) { ret 1; }
+    # each component's contour ends past the points already written
+    if (dv_ends[0] != 3 || dv_ends[1] != 7) { ret 1; }
+
+    # dotbelowcomb shifted right by 807
+    if (dv_pts[0].x != 201 || dv_pts[0].y != -141) { ret 1; }
+    if (dv_pts[1].x != 385 || dv_pts[1].y != -141) { ret 1; }
+    if (dv_pts[2].x != 385 || dv_pts[2].y != -375) { ret 1; }
+    if (dv_pts[3].x != 201 || dv_pts[3].y != -375) { ret 1; }
+    # l shifted right by 11
+    if (dv_pts[4].x != 204 || dv_pts[4].y != 1556) { ret 1; }
+    if (dv_pts[5].x != 388 || dv_pts[5].y != 1556) { ret 1; }
+    if (dv_pts[6].x != 388 || dv_pts[6].y != 0) { ret 1; }
+    if (dv_pts[7].x != 204 || dv_pts[7].y != 0) { ret 1; }
+
+    var adv: u16 = 0;
+    var lsb: i16 = 0;
+    if (!glyph_hmetrics(?f, 3, ?adv, ?lsb)) { ret 1; }
+    if (adv != 589 || lsb != 201) { ret 1; }
+    ret 0;
+}
+
+test "info: nested composite resolves both levels" {
+    build_dejavu();
+    var f: Font;
+    if (!init(?dv_buf[0], 512, ?f)) { ret 1; }
+
+    var o: glyf.Outline;
+    if (!glyph_outline(?f, 5, ?dv_pts[0], 16, ?dv_ends[0], 4, ?o)) { ret 1; }
+    if (o.num_contours != 3 || o.num_points != 12) { ret 1; }
+    if (dv_ends[0] != 3 || dv_ends[1] != 7 || dv_ends[2] != 11) { ret 1; }
+
+    # macron shifted by (-216, +315)
+    if (dv_pts[0].x != -3 || dv_pts[0].y != 1841) { ret 1; }
+    if (dv_pts[1].x != 595 || dv_pts[1].y != 1841) { ret 1; }
+    if (dv_pts[2].x != 595 || dv_pts[2].y != 1693) { ret 1; }
+    if (dv_pts[3].x != -3 || dv_pts[3].y != 1693) { ret 1; }
+    # the nested composite lands where it does on its own, placed at the origin
+    if (dv_pts[4].x != 201 || dv_pts[4].y != -141) { ret 1; }
+    if (dv_pts[8].x != 204 || dv_pts[8].y != 1556) { ret 1; }
+    if (dv_pts[11].x != 204 || dv_pts[11].y != 0) { ret 1; }
+    ret 0;
+}
+
+test "info: composite renders both components" {
+    build_dejavu();
+    var f: Font;
+    if (!init(?dv_buf[0], 512, ?f)) { ret 1; }
+    # 1931 design units of height across 20 rows; the glyph is under 2 px wide
+    if (!render_glyph(?f, 3, 0.01035, ?dv_pts[0], 16, ?dv_ends[0], 4, ?dv_edges[0], 128, ?dv_bmp[0], 4, 20)) { ret 1; }
+    # the stem runs down the upper rows and the dot sits at the bottom
+    if (dv_bmp[5 * 4 + 1] == 0) { ret 1; }
+    if (dv_bmp[18 * 4 + 1] == 0) { ret 1; }
+    # the gap between them is what proves the two components stayed apart
+    if (dv_bmp[16 * 4 + 1] != 0) { ret 1; }
+    # nothing reaches the far column
+    if (dv_bmp[5 * 4 + 3] != 0) { ret 1; }
+    ret 0;
+}
+
+test "info: composite outline needs room for every component" {
+    build_dejavu();
+    var f: Font;
+    if (!init(?dv_buf[0], 512, ?f)) { ret 1; }
+    var o: glyf.Outline;
+    # the first component fits exactly; the second has nowhere to go
+    if (glyph_outline(?f, 3, ?dv_pts[0], 4, ?dv_ends[0], 4, ?o)) { ret 1; }
+    if (glyph_outline(?f, 3, ?dv_pts[0], 16, ?dv_ends[0], 1, ?o)) { ret 1; }
+    ret 0;
+}
+
+test "info: self-referencing composite rejected" {
+    build_dejavu();
+    var f: Font;
+    if (!init(?dv_buf[0], 512, ?f)) { ret 1; }
+    # point glyph 3's first component at glyph 3
+    w16(?dv_buf[0], DV_G3 + 12, 3);
+    var o: glyf.Outline;
+    if (glyph_outline(?f, 3, ?dv_pts[0], 16, ?dv_ends[0], 4, ?o)) { ret 1; }
+    ret 0;
+}
+
+test "info: mutually recursive composites rejected" {
+    build_dejavu();
+    var f: Font;
+    if (!init(?dv_buf[0], 512, ?f)) { ret 1; }
+    # glyph 5 already references glyph 3; send glyph 3 back to glyph 5
+    w16(?dv_buf[0], DV_G3 + 12, 5);
+    var o: glyf.Outline;
+    if (glyph_outline(?f, 5, ?dv_pts[0], 16, ?dv_ends[0], 4, ?o)) { ret 1; }
+    if (glyph_outline(?f, 3, ?dv_pts[0], 16, ?dv_ends[0], 4, ?o)) { ret 1; }
+    ret 0;
+}
+
+test "info: point-matched component rejected" {
+    build_dejavu();
+    var f: Font;
+    if (!init(?dv_buf[0], 512, ?f)) { ret 1; }
+    # clear ARGS_ARE_XY_VALUES, leaving args that are point indices
+    w16(?dv_buf[0], DV_G3 + 10, 0x1025);
+    var o: glyf.Outline;
+    if (glyph_outline(?f, 3, ?dv_pts[0], 16, ?dv_ends[0], 4, ?o)) { ret 1; }
+    ret 0;
+}
+
+test "info: component out of range rejected" {
+    build_dejavu();
+    var f: Font;
+    if (!init(?dv_buf[0], 512, ?f)) { ret 1; }
+    w16(?dv_buf[0], DV_G3 + 12, 99);
+    var o: glyf.Outline;
+    if (glyph_outline(?f, 3, ?dv_pts[0], 16, ?dv_ends[0], 4, ?o)) { ret 1; }
+    ret 0;
+}
+
+test "info: kern pairs through the facade" {
+    build_dejavu();
+    var f: Font;
+    if (!init(?dv_buf[0], 512, ?f)) { ret 1; }
+    if (f.kern_num_pairs != 4) { ret 1; }
+
+    var v: i16 = 0;
+    if (!glyph_kern_advance(?f, 16, 36, ?v)) { ret 1; }
+    if (v != -45) { ret 1; }
+    if (!glyph_kern_advance(?f, 134, 90, ?v)) { ret 1; }
+    if (v != -83) { ret 1; }
+    if (!glyph_kern_advance(?f, 134, 92, ?v)) { ret 1; }
+    if (v != -139) { ret 1; }
+    if (!glyph_kern_advance(?f, 134, 109, ?v)) { ret 1; }
+    if (v != -73) { ret 1; }
+    # an unkerned pair is not an error
+    if (!glyph_kern_advance(?f, 79, 79, ?v)) { ret 1; }
+    if (v != 0) { ret 1; }
+    ret 0;
+}
+
+test "info: a font without kerning reports none" {
+    build_font();
+    var f: Font;
+    if (!init(?font_buf[0], 320, ?f)) { ret 1; }
+    if (f.kern_off != 0) { ret 1; }
+    var v: i16 = 0;
+    if (glyph_kern_advance(?f, 0, 1, ?v)) { ret 1; }
+    ret 0;
+}
+
+test "info: outline maxima size composite buffers" {
+    build_dejavu();
+    var f: Font;
+    if (!init(?dv_buf[0], 512, ?f)) { ret 1; }
+    var m: maxp.Maxima;
+    if (!outline_maxima(?f, ?m)) { ret 1; }
+    if (m.max_points != 4 || m.max_contours != 1) { ret 1; }
+    # the composite maxima are what admit the nested glyph, and they do
+    if (m.max_composite_points != 12 || m.max_composite_contours != 3) { ret 1; }
+    var o: glyf.Outline;
+    if (!glyph_outline(?f, 5, ?dv_pts[0], m.max_composite_points::usize, ?dv_ends[0], m.max_composite_contours::usize, ?o)) { ret 1; }
+    if (o.num_points != 12) { ret 1; }
     ret 0;
 }
