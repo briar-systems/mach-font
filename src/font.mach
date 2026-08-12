@@ -78,4 +78,5 @@ fwd info.glyph_index;
 fwd info.glyph_outline;
 fwd info.outline_maxima;
 fwd info.scale_for_pixel_height;
+fwd info.scale_for_em_size;
 fwd info.render_glyph;
