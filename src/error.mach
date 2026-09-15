@@ -1,0 +1,73 @@
+# the failures a font operation reports
+#
+# font files are untrusted input, so every read, table parse and glyph walk is
+# fallible. each way one can fail is its own case here, and a case carries the
+# value that identifies the fault where there is one, so a caller can tell a
+# truncated file from an unsupported feature from a buffer it sized too small.
+
+use std.types.size.usize;
+
+# a table the library reads, named when an operation needs it and the font lacks it
+pub tag TableId: u8 {
+    head;
+    maxp;
+    hhea;
+    hmtx;
+    loca;
+    glyf;
+    cmap;
+    kern;
+}
+
+# every way a font operation can fail
+# ---
+# truncated:               a read at this byte offset runs past the end of the file
+# not_truetype:            the sfnt version is not truetype outlines, payload the version
+# missing_table:           the font lacks a table the operation needs
+# bad_magic:               the head table's magic number is wrong, payload the value read
+# zero_units_per_em:       the head table declares a zero design grid
+# loca_format:             head's indexToLocFormat is neither short nor long, payload the value
+# inverted_glyph:          loca places this glyph's end before its start
+# glyph_out_of_range:      this glyph index is not below the font's glyph count
+# no_long_metrics:         hhea declares zero long horizontal metrics
+# maxp_version:            maxp carries an unknown version, payload the version
+# vertical_span:           hhea's ascent does not rise above its descent, payload ascent minus descent
+# no_unicode_cmap:         no cmap encoding record maps unicode
+# cmap_format:             the selected cmap subtable's format is unsupported, payload the format
+# kern_version:            the kern table is not the version 0 layout, payload the version
+# kern_subtable_length:    a kern subtable's length cannot span its own header, payload the length
+# no_horizontal_kern:      no kern subtable is plain horizontal format 0
+# composite_glyph:         a simple-glyph operation was given a composite glyph
+# composite_depth:         composite references nest too deep, which is how a cycle shows
+# point_matched_component: a component is placed by point matching, which is unsupported
+# too_many_points:         a composed outline exceeds the 65535 points an outline can count
+# contour_end:             a contour end index lies past the outline's points, payload the index
+# points_full:             the caller's point buffer is too small
+# contours_full:           the caller's contour-end buffer is too small
+# edges_full:              the caller's edge buffer is too small
+pub tag FontError: u8 {
+    truncated:               usize;
+    not_truetype:            u32;
+    missing_table:           TableId;
+    bad_magic:               u32;
+    zero_units_per_em;
+    loca_format:             i16;
+    inverted_glyph:          u16;
+    glyph_out_of_range:      u16;
+    no_long_metrics;
+    maxp_version:            u32;
+    vertical_span:           i32;
+    no_unicode_cmap;
+    cmap_format:             u16;
+    kern_version:            u16;
+    kern_subtable_length:    u16;
+    no_horizontal_kern;
+    composite_glyph;
+    composite_depth;
+    point_matched_component;
+    too_many_points;
+    contour_end:             u16;
+    points_full;
+    contours_full;
+    edges_full;
+}
