@@ -11,13 +11,15 @@
 # transform. this module decodes one record at a time and supplies the affine
 # machinery to place and nest them; resolving a component index back to its glyph
 # data needs the loca table, so the recursive walk lives in font.info. every read
-# is bounds-checked through font.read; a truncated or inconsistent glyph reports
-# failure rather than reading out of bounds.
+# is bounds-checked through font.read, so a truncated or inconsistent glyph
+# reports failure rather than reading out of bounds.
 
 use font.read;
+use font.error.FontError;
 use std.types.bool.bool;
 use std.types.bool.true;
 use std.types.bool.false;
+use std.types.result.res;
 use std.types.size.usize;
 
 # simple-glyph point flag bits
@@ -103,10 +105,12 @@ pub rec Xform {
 # glyph: index of the glyph this component draws
 # flags: the record's raw component flags
 # m:     the component's placement transform
+# next:  byte offset just past the record, where the next one begins
 pub rec Component {
     glyph: u16;
     flags: u16;
     m:     Xform;
+    next:  usize;
 }
 
 # write the identity placement
@@ -174,17 +178,25 @@ pub fun xform_apply(m: *Xform, pts: *Point, n: usize) {
 # data: pointer to the first byte of the file
 # len:  number of bytes addressable through data
 # goff: absolute byte offset of the glyph's data
-# out:  receives the header on success
-# ret:  true when the 10-byte header lies within len
-pub fun glyph_header(data: *u8, len: usize, goff: usize, out: *GlyphInfo) bool {
-    var g: GlyphInfo;
-    if (!read.read_i16(data, len, goff, ?g.num_contours)) { ret false; }
-    if (!read.read_i16(data, len, goff + 2, ?g.x_min)) { ret false; }
-    if (!read.read_i16(data, len, goff + 4, ?g.y_min)) { ret false; }
-    if (!read.read_i16(data, len, goff + 6, ?g.x_max)) { ret false; }
-    if (!read.read_i16(data, len, goff + 8, ?g.y_max)) { ret false; }
-    out[0] = g;
-    ret true;
+# ret:  the header, or truncated
+pub fun glyph_header(data: *u8, len: usize, goff: usize) res[GlyphInfo, FontError] {
+    val contours: res[i16, FontError] = read.read_i16(data, len, goff);
+    if (sel contours.err) { ret res[GlyphInfo, FontError].err{contours.err}; }
+    val x_min: res[i16, FontError] = read.read_i16(data, len, goff + 2);
+    if (sel x_min.err) { ret res[GlyphInfo, FontError].err{x_min.err}; }
+    val y_min: res[i16, FontError] = read.read_i16(data, len, goff + 4);
+    if (sel y_min.err) { ret res[GlyphInfo, FontError].err{y_min.err}; }
+    val x_max: res[i16, FontError] = read.read_i16(data, len, goff + 6);
+    if (sel x_max.err) { ret res[GlyphInfo, FontError].err{x_max.err}; }
+    val y_max: res[i16, FontError] = read.read_i16(data, len, goff + 8);
+    if (sel y_max.err) { ret res[GlyphInfo, FontError].err{y_max.err}; }
+    ret res[GlyphInfo, FontError].ok{GlyphInfo{
+        num_contours: contours.ok,
+        x_min:        x_min.ok,
+        y_min:        y_min.ok,
+        x_max:        x_max.ok,
+        y_max:        y_max.ok,
+    }};
 }
 
 # report whether a header denotes a composite glyph
@@ -198,26 +210,36 @@ pub fun is_composite(info: *GlyphInfo) bool {
 # byte offset of a composite glyph's first component record, past the 10-byte header
 pub val COMPONENTS_OFFSET: usize = 10;
 
+# read one F2Dot14 value into a transform slot, returning the offset past it
+fun read_f2dot14_into(data: *u8, len: usize, off: usize, slot: *f32) res[usize, FontError] {
+    val v: res[f32, FontError] = read.read_f2dot14(data, len, off);
+    if (sel v.err) { ret res[usize, FontError].err{v.err}; }
+    slot[0] = v.ok;
+    ret res[usize, FontError].ok{off + 2};
+}
+
 # read one component record of a composite glyph
 #
 # decodes the record's flags, component glyph index, and placement into a
 # transform ready to apply to that component's points. records are variable
-# length, so out_next reports where the next one begins; the caller stops when the
-# record's MORE_COMPONENTS flag is clear. when ARGS_ARE_XY_VALUES is clear the two
-# args are point indices to align rather than an offset, and they are reported
-# verbatim in the transform's translation for a caller that rejects or handles
-# that placement itself.
+# length, so the component's next field reports where the next one begins, and
+# the caller stops when the record's MORE_COMPONENTS flag is clear. when
+# ARGS_ARE_XY_VALUES is clear the two args are point indices to align rather than
+# an offset, and they are reported verbatim in the transform's translation for a
+# caller that rejects or handles that placement itself.
 # ---
-# data:     pointer to the first byte of the file
-# len:      number of bytes addressable through data
-# off:      absolute byte offset of the component record
-# out:      receives the decoded component on success
-# out_next: receives the byte offset just past the record
-# ret:      true when the whole record lies within len, false otherwise
-pub fun read_component(data: *u8, len: usize, off: usize, out: *Component, out_next: *usize) bool {
+# data: pointer to the first byte of the file
+# len:  number of bytes addressable through data
+# off:  absolute byte offset of the component record
+# ret:  the decoded component, or truncated
+pub fun read_component(data: *u8, len: usize, off: usize) res[Component, FontError] {
     var c: Component;
-    if (!read.read_u16(data, len, off, ?c.flags)) { ret false; }
-    if (!read.read_u16(data, len, off + 2, ?c.glyph)) { ret false; }
+    val flags: res[u16, FontError] = read.read_u16(data, len, off);
+    if (sel flags.err) { ret res[Component, FontError].err{flags.err}; }
+    val glyph: res[u16, FontError] = read.read_u16(data, len, off + 2);
+    if (sel glyph.err) { ret res[Component, FontError].err{glyph.err}; }
+    c.flags = flags.ok;
+    c.glyph = glyph.ok;
 
     val xy: bool = (c.flags & ARGS_ARE_XY_VALUES) != 0;
     var cursor: usize = off + 4;
@@ -225,32 +247,32 @@ pub fun read_component(data: *u8, len: usize, off: usize, out: *Component, out_n
     var arg2: f32 = 0.0;
 
     if ((c.flags & ARG_1_AND_2_ARE_WORDS) != 0) {
-        var w1: u16 = 0;
-        var w2: u16 = 0;
-        if (!read.read_u16(data, len, cursor, ?w1)) { ret false; }
-        if (!read.read_u16(data, len, cursor + 2, ?w2)) { ret false; }
+        val w1: res[u16, FontError] = read.read_u16(data, len, cursor);
+        if (sel w1.err) { ret res[Component, FontError].err{w1.err}; }
+        val w2: res[u16, FontError] = read.read_u16(data, len, cursor + 2);
+        if (sel w2.err) { ret res[Component, FontError].err{w2.err}; }
         if (xy) {
-            arg1 = w1:~i16::f32;
-            arg2 = w2:~i16::f32;
+            arg1 = w1.ok:~i16::f32;
+            arg2 = w2.ok:~i16::f32;
         }
         or {
-            arg1 = w1::f32;
-            arg2 = w2::f32;
+            arg1 = w1.ok::f32;
+            arg2 = w2.ok::f32;
         }
         cursor = cursor + 4;
     }
     or {
-        var b1: u8 = 0;
-        var b2: u8 = 0;
-        if (!read.read_u8(data, len, cursor, ?b1)) { ret false; }
-        if (!read.read_u8(data, len, cursor + 1, ?b2)) { ret false; }
+        val b1: res[u8, FontError] = read.read_u8(data, len, cursor);
+        if (sel b1.err) { ret res[Component, FontError].err{b1.err}; }
+        val b2: res[u8, FontError] = read.read_u8(data, len, cursor + 1);
+        if (sel b2.err) { ret res[Component, FontError].err{b2.err}; }
         if (xy) {
-            arg1 = b1:~i8::f32;
-            arg2 = b2:~i8::f32;
+            arg1 = b1.ok:~i8::f32;
+            arg2 = b2.ok:~i8::f32;
         }
         or {
-            arg1 = b1::f32;
-            arg2 = b2::f32;
+            arg1 = b1.ok::f32;
+            arg2 = b2.ok::f32;
         }
         cursor = cursor + 2;
     }
@@ -260,28 +282,38 @@ pub fun read_component(data: *u8, len: usize, off: usize, out: *Component, out_n
     c.m.c = 0.0;
     c.m.d = 1.0;
 
+    # each present scale field is read in order, and the cursor lands past the last.
+    var slots: [4]*f32;
+    var count: usize = 0;
     if ((c.flags & WE_HAVE_A_SCALE) != 0) {
-        if (!read.read_f2dot14(data, len, cursor, ?c.m.a)) { ret false; }
-        c.m.d = c.m.a;
-        cursor = cursor + 2;
+        slots[0] = ?c.m.a;
+        count = 1;
     }
     or ((c.flags & WE_HAVE_AN_X_AND_Y_SCALE) != 0) {
-        if (!read.read_f2dot14(data, len, cursor, ?c.m.a)) { ret false; }
-        if (!read.read_f2dot14(data, len, cursor + 2, ?c.m.d)) { ret false; }
-        cursor = cursor + 4;
+        slots[0] = ?c.m.a;
+        slots[1] = ?c.m.d;
+        count = 2;
     }
     or ((c.flags & WE_HAVE_A_TWO_BY_TWO) != 0) {
-        if (!read.read_f2dot14(data, len, cursor, ?c.m.a)) { ret false; }
-        if (!read.read_f2dot14(data, len, cursor + 2, ?c.m.b)) { ret false; }
-        if (!read.read_f2dot14(data, len, cursor + 4, ?c.m.c)) { ret false; }
-        if (!read.read_f2dot14(data, len, cursor + 6, ?c.m.d)) { ret false; }
-        cursor = cursor + 8;
+        slots[0] = ?c.m.a;
+        slots[1] = ?c.m.b;
+        slots[2] = ?c.m.c;
+        slots[3] = ?c.m.d;
+        count = 4;
     }
+    var i: usize = 0;
+    for (i < count) {
+        val at: res[usize, FontError] = read_f2dot14_into(data, len, cursor, slots[i]);
+        if (sel at.err) { ret res[Component, FontError].err{at.err}; }
+        cursor = at.ok;
+        i = i + 1;
+    }
+    if ((c.flags & WE_HAVE_A_SCALE) != 0) { c.m.d = c.m.a; }
 
     c.m.dx = arg1;
     c.m.dy = arg2;
     if (xy) {
-        # an offset is stated in the composite's space by default; SCALED_COMPONENT_OFFSET
+        # an offset is stated in the composite's space by default. SCALED_COMPONENT_OFFSET
         # states it in the component's own space, so it passes through the 2x2 first.
         if ((c.flags & SCALED_COMPONENT_OFFSET) != 0 && (c.flags & UNSCALED_COMPONENT_OFFSET) == 0) {
             c.m.dx = c.m.a * arg1 + c.m.c * arg2;
@@ -293,37 +325,64 @@ pub fun read_component(data: *u8, len: usize, off: usize, out: *Component, out_n
         }
     }
 
-    out[0] = c;
-    out_next[0] = cursor;
-    ret true;
+    c.next = cursor;
+    ret res[Component, FontError].ok{c};
 }
 
 # read the point count of a simple glyph from its last contour end index
 #
-# the point count is one past the highest index in endPtsOfContours; a caller
-# sizes its point buffer from this before extracting.
+# the point count is one past the highest index in endPtsOfContours, and a caller
+# sizes its point buffer from this before extracting. an empty glyph has none.
 # ---
 # data:         pointer to the first byte of the file
 # len:          number of bytes addressable through data
 # goff:         absolute byte offset of the glyph's data
-# num_contours: the glyph's contour count (must be positive)
-# out:          receives the point count on success
-# ret:          true when the contour count is positive and the index is readable
-pub fun point_count(data: *u8, len: usize, goff: usize, num_contours: i16, out: *u16) bool {
-    if (num_contours <= 0) { ret false; }
+# num_contours: the glyph's contour count, from its header
+# ret:          the point count, or composite_glyph, too_many_points or truncated
+pub fun point_count(data: *u8, len: usize, goff: usize, num_contours: i16) res[u16, FontError] {
+    if (num_contours < 0) { ret res[u16, FontError].err{FontError.composite_glyph{}}; }
+    if (num_contours == 0) { ret res[u16, FontError].ok{0}; }
     val last: usize = goff + 10 + (num_contours::usize - 1) * 2;
-    var end_idx: u16 = 0;
-    if (!read.read_u16(data, len, last, ?end_idx)) { ret false; }
-    out[0] = end_idx + 1;
-    ret true;
+    val end_idx: res[u16, FontError] = read.read_u16(data, len, last);
+    if (sel end_idx.err) { ret res[u16, FontError].err{end_idx.err}; }
+    if (end_idx.ok == 0xFFFF) { ret res[u16, FontError].err{FontError.too_many_points{}}; }
+    ret res[u16, FontError].ok{end_idx.ok + 1};
+}
+
+# read one coordinate block of a simple glyph into the points' x or y
+#
+# short and same-or-positive flag bits select how each delta is stored, and the
+# running sum of the deltas is the absolute coordinate.
+fun read_coords(data: *u8, len: usize, cursor: usize, pts: *Point, np: usize, short_bit: u8, same_bit: u8, is_x: bool) res[usize, FontError] {
+    var at: usize = cursor;
+    var acc: i32 = 0;
+    var i: usize = 0;
+    for (i < np) {
+        val flag: u8 = pts[i].on_curve;
+        if ((flag & short_bit) != 0) {
+            val d: res[u8, FontError] = read.read_u8(data, len, at);
+            if (sel d.err) { ret res[usize, FontError].err{d.err}; }
+            at = at + 1;
+            if ((flag & same_bit) != 0) { acc = acc + d.ok::i32; }
+            or { acc = acc - d.ok::i32; }
+        }
+        or ((flag & same_bit) == 0) {
+            val w: res[i16, FontError] = read.read_i16(data, len, at);
+            if (sel w.err) { ret res[usize, FontError].err{w.err}; }
+            at = at + 2;
+            acc = acc + w.ok::i32;
+        }
+        if (is_x) { pts[i].x = acc::i16; }
+        or { pts[i].y = acc::i16; }
+        i = i + 1;
+    }
+    ret res[usize, FontError].ok{at};
 }
 
 # extract a simple glyph's contours into caller-provided buffers
 #
 # writes each contour's inclusive end point index into ends and every point
-# (absolute coordinates, on/off-curve flag) into pts, filling out with the counts
-# written. reports failure for a composite glyph, a buffer too small for the
-# glyph's contours or points, or any out-of-range read. an empty glyph (zero
+# (absolute coordinates, on/off-curve flag) into pts. an empty glyph (zero
 # contours) succeeds with zero counts.
 # ---
 # data:     pointer to the first byte of the file
@@ -333,55 +392,53 @@ pub fun point_count(data: *u8, len: usize, goff: usize, num_contours: i16, out: 
 # pts_cap:  capacity of pts in points
 # ends:     buffer receiving each contour's end point index
 # ends_cap: capacity of ends in entries
-# out:      receives the written contour and point counts
-# ret:      true on a fully extracted simple glyph, false otherwise
-pub fun extract_simple(data: *u8, len: usize, goff: usize, pts: *Point, pts_cap: usize, ends: *u16, ends_cap: usize, out: *Outline) bool {
-    var nc_raw: i16 = 0;
-    if (!read.read_i16(data, len, goff, ?nc_raw)) { ret false; }
-    if (nc_raw < 0) { ret false; }
-    if (nc_raw == 0) {
-        out[0] = Outline{ num_contours: 0, num_points: 0 };
-        ret true;
-    }
+# ret:      the written contour and point counts, or composite_glyph, contours_full,
+#           points_full, too_many_points or truncated
+pub fun extract_simple(data: *u8, len: usize, goff: usize, pts: *Point, pts_cap: usize, ends: *u16, ends_cap: usize) res[Outline, FontError] {
+    val nc_raw: res[i16, FontError] = read.read_i16(data, len, goff);
+    if (sel nc_raw.err) { ret res[Outline, FontError].err{nc_raw.err}; }
+    if (nc_raw.ok < 0) { ret res[Outline, FontError].err{FontError.composite_glyph{}}; }
+    if (nc_raw.ok == 0) { ret res[Outline, FontError].ok{Outline{ num_contours: 0, num_points: 0 }}; }
 
-    val nc: usize = nc_raw::usize;
-    if (nc > ends_cap) { ret false; }
+    val nc: usize = nc_raw.ok::usize;
+    if (nc > ends_cap) { ret res[Outline, FontError].err{FontError.contours_full{}}; }
 
     var i: usize = 0;
     for (i < nc) {
-        if (!read.read_u16(data, len, goff + 10 + i * 2, ?ends[i])) { ret false; }
+        val end: res[u16, FontError] = read.read_u16(data, len, goff + 10 + i * 2);
+        if (sel end.err) { ret res[Outline, FontError].err{end.err}; }
+        ends[i] = end.ok;
         i = i + 1;
     }
 
-    val np_full: usize = ends[nc - 1]::usize + 1;
-    if (np_full > pts_cap) { ret false; }
-    if (np_full > 0xFFFF) { ret false; }
-    val np: usize = np_full;
+    val np: usize = ends[nc - 1]::usize + 1;
+    if (np > 0xFFFF) { ret res[Outline, FontError].err{FontError.too_many_points{}}; }
+    if (np > pts_cap) { ret res[Outline, FontError].err{FontError.points_full{}}; }
 
-    var ins_len: u16 = 0;
-    if (!read.read_u16(data, len, goff + 10 + nc * 2, ?ins_len)) { ret false; }
+    val ins_len: res[u16, FontError] = read.read_u16(data, len, goff + 10 + nc * 2);
+    if (sel ins_len.err) { ret res[Outline, FontError].err{ins_len.err}; }
 
     # cursor walks the flags block, then the x block, then the y block in turn.
-    var cursor: usize = goff + 10 + nc * 2 + 2 + ins_len::usize;
+    var cursor: usize = goff + 10 + nc * 2 + 2 + ins_len.ok::usize;
 
     # expand the run-length flags, stashing each point's full flag byte in
-    # on_curve for the coordinate passes; it is reduced to the on-curve bit at the end.
+    # on_curve for the coordinate passes. it is reduced to the on-curve bit at the end.
     i = 0;
     for (i < np) {
-        var flag: u8 = 0;
-        if (!read.read_u8(data, len, cursor, ?flag)) { ret false; }
+        val flag: res[u8, FontError] = read.read_u8(data, len, cursor);
+        if (sel flag.err) { ret res[Outline, FontError].err{flag.err}; }
         cursor = cursor + 1;
-        pts[i].on_curve = flag;
+        pts[i].on_curve = flag.ok;
         i = i + 1;
 
-        if ((flag & REPEAT) != 0) {
-            var reps: u8 = 0;
-            if (!read.read_u8(data, len, cursor, ?reps)) { ret false; }
+        if ((flag.ok & REPEAT) != 0) {
+            val reps: res[u8, FontError] = read.read_u8(data, len, cursor);
+            if (sel reps.err) { ret res[Outline, FontError].err{reps.err}; }
             cursor = cursor + 1;
             var r: u8 = 0;
-            for (r < reps) {
+            for (r < reps.ok) {
                 if (i < np) {
-                    pts[i].on_curve = flag;
+                    pts[i].on_curve = flag.ok;
                     i = i + 1;
                 }
                 r = r + 1;
@@ -389,51 +446,10 @@ pub fun extract_simple(data: *u8, len: usize, goff: usize, pts: *Point, pts_cap:
         }
     }
 
-    var accx: i32 = 0;
-    i = 0;
-    for (i < np) {
-        val flag: u8 = pts[i].on_curve;
-        if ((flag & X_SHORT) != 0) {
-            var dx: u8 = 0;
-            if (!read.read_u8(data, len, cursor, ?dx)) { ret false; }
-            cursor = cursor + 1;
-            if ((flag & X_SAME_OR_POS) != 0) { accx = accx + dx::i32; }
-            or { accx = accx - dx::i32; }
-        }
-        or {
-            if ((flag & X_SAME_OR_POS) == 0) {
-                var dw: i16 = 0;
-                if (!read.read_i16(data, len, cursor, ?dw)) { ret false; }
-                cursor = cursor + 2;
-                accx = accx + dw::i32;
-            }
-        }
-        pts[i].x = accx::i16;
-        i = i + 1;
-    }
-
-    var accy: i32 = 0;
-    i = 0;
-    for (i < np) {
-        val flag: u8 = pts[i].on_curve;
-        if ((flag & Y_SHORT) != 0) {
-            var dy: u8 = 0;
-            if (!read.read_u8(data, len, cursor, ?dy)) { ret false; }
-            cursor = cursor + 1;
-            if ((flag & Y_SAME_OR_POS) != 0) { accy = accy + dy::i32; }
-            or { accy = accy - dy::i32; }
-        }
-        or {
-            if ((flag & Y_SAME_OR_POS) == 0) {
-                var dw: i16 = 0;
-                if (!read.read_i16(data, len, cursor, ?dw)) { ret false; }
-                cursor = cursor + 2;
-                accy = accy + dw::i32;
-            }
-        }
-        pts[i].y = accy::i16;
-        i = i + 1;
-    }
+    val after_x: res[usize, FontError] = read_coords(data, len, cursor, pts, np, X_SHORT, X_SAME_OR_POS, true);
+    if (sel after_x.err) { ret res[Outline, FontError].err{after_x.err}; }
+    val after_y: res[usize, FontError] = read_coords(data, len, after_x.ok, pts, np, Y_SHORT, Y_SAME_OR_POS, false);
+    if (sel after_y.err) { ret res[Outline, FontError].err{after_y.err}; }
 
     # reduce the stashed flag bytes to the on-curve bit.
     i = 0;
@@ -442,8 +458,7 @@ pub fun extract_simple(data: *u8, len: usize, goff: usize, pts: *Point, pts_cap:
         i = i + 1;
     }
 
-    out[0] = Outline{ num_contours: nc_raw::u16, num_points: np::u16 };
-    ret true;
+    ret res[Outline, FontError].ok{Outline{ num_contours: nc_raw.ok::u16, num_points: np::u16 }};
 }
 
 fun w16(buf: *u8, off: usize, v: u16) {
@@ -479,28 +494,34 @@ var tri_ends: [4]u16;
 
 test "glyf: header and composite detection" {
     build_triangle();
-    var info: GlyphInfo;
-    if (!glyph_header(?glyph_buf[0], 64, 0, ?info)) { ret 1; }
-    if (info.num_contours != 1) { ret 1; }
-    if (info.x_max != 300 || info.y_max != 400) { ret 1; }
-    if (is_composite(?info)) { ret 1; }
+    val info: res[GlyphInfo, FontError] = glyph_header(?glyph_buf[0], 64, 0);
+    if (!sel info.ok) { ret 1; }
+    if (info.ok.num_contours != 1) { ret 2; }
+    if (info.ok.x_max != 300 || info.ok.y_max != 400) { ret 3; }
+    if (is_composite(?info.ok)) { ret 4; }
     ret 0;
 }
 
 test "glyf: point count" {
     build_triangle();
-    var n: u16 = 0;
-    if (!point_count(?glyph_buf[0], 64, 0, 1, ?n)) { ret 1; }
-    if (n != 3) { ret 1; }
+    val n: res[u16, FontError] = point_count(?glyph_buf[0], 64, 0, 1);
+    if (!sel n.ok) { ret 1; }
+    if (n.ok != 3) { ret 2; }
+    val empty: res[u16, FontError] = point_count(?glyph_buf[0], 64, 0, 0);
+    if (!sel empty.ok) { ret 3; }
+    if (empty.ok != 0) { ret 4; }
+    val composite: res[u16, FontError] = point_count(?glyph_buf[0], 64, 0, -1);
+    if (!sel composite.err) { ret 5; }
+    if (!sel composite.err.composite_glyph) { ret 6; }
     ret 0;
 }
 
 test "glyf: extract triangle points" {
     build_triangle();
-    var o: Outline;
-    if (!extract_simple(?glyph_buf[0], 64, 0, ?tri_pts[0], 8, ?tri_ends[0], 4, ?o)) { ret 1; }
-    if (o.num_contours != 1) { ret 1; }
-    if (o.num_points != 3) { ret 1; }
+    val r: res[Outline, FontError] = extract_simple(?glyph_buf[0], 64, 0, ?tri_pts[0], 8, ?tri_ends[0], 4);
+    if (!sel r.ok) { ret 1; }
+    if (r.ok.num_contours != 1) { ret 1; }
+    if (r.ok.num_points != 3) { ret 1; }
     if (tri_ends[0] != 2) { ret 1; }
     if (tri_pts[0].x != 100 || tri_pts[0].y != 100) { ret 1; }
     if (tri_pts[1].x != 300 || tri_pts[1].y != 100) { ret 1; }
@@ -512,16 +533,36 @@ test "glyf: extract triangle points" {
 
 test "glyf: too few points capacity rejected" {
     build_triangle();
-    var o: Outline;
-    if (extract_simple(?glyph_buf[0], 64, 0, ?tri_pts[0], 2, ?tri_ends[0], 4, ?o)) { ret 1; }
+    val r: res[Outline, FontError] = extract_simple(?glyph_buf[0], 64, 0, ?tri_pts[0], 2, ?tri_ends[0], 4);
+    if (!sel r.err) { ret 1; }
+    if (!sel r.err.points_full) { ret 2; }
+    ret 0;
+}
+
+test "glyf: too few contours capacity rejected" {
+    build_triangle();
+    val r: res[Outline, FontError] = extract_simple(?glyph_buf[0], 64, 0, ?tri_pts[0], 8, ?tri_ends[0], 0);
+    if (!sel r.err) { ret 1; }
+    if (!sel r.err.contours_full) { ret 2; }
+    ret 0;
+}
+
+test "glyf: truncated coordinates rejected" {
+    build_triangle();
+    # the last y delta is an i16 at 21..23
+    val r: res[Outline, FontError] = extract_simple(?glyph_buf[0], 22, 0, ?tri_pts[0], 8, ?tri_ends[0], 4);
+    if (!sel r.err) { ret 1; }
+    if (!sel r.err.truncated) { ret 2; }
+    if (r.err.truncated != 21) { ret 3; }
     ret 0;
 }
 
 test "glyf: composite rejected by extract" {
     build_triangle();
     w16(?glyph_buf[0], 0, 0xFFFF);   # numberOfContours = -1
-    var o: Outline;
-    if (extract_simple(?glyph_buf[0], 64, 0, ?tri_pts[0], 8, ?tri_ends[0], 4, ?o)) { ret 1; }
+    val r: res[Outline, FontError] = extract_simple(?glyph_buf[0], 64, 0, ?tri_pts[0], 8, ?tri_ends[0], 4);
+    if (!sel r.err) { ret 1; }
+    if (!sel r.err.composite_glyph) { ret 2; }
     ret 0;
 }
 
@@ -543,9 +584,9 @@ var real_composite: [24]u8 = [24]u8{
 };
 
 test "glyf: real font simple glyph bytes" {
-    var o: Outline;
-    if (!extract_simple(?real_simple[0], 24, 0, ?tri_pts[0], 8, ?tri_ends[0], 4, ?o)) { ret 1; }
-    if (o.num_contours != 1 || o.num_points != 4) { ret 1; }
+    val r: res[Outline, FontError] = extract_simple(?real_simple[0], 24, 0, ?tri_pts[0], 8, ?tri_ends[0], 4);
+    if (!sel r.ok) { ret 1; }
+    if (r.ok.num_contours != 1 || r.ok.num_points != 4) { ret 1; }
     if (tri_ends[0] != 3) { ret 1; }
     if (tri_pts[0].x != -606 || tri_pts[0].y != -141) { ret 1; }
     if (tri_pts[1].x != -422 || tri_pts[1].y != -141) { ret 1; }
@@ -556,17 +597,17 @@ test "glyf: real font simple glyph bytes" {
 
 test "glyf: real font composite component records" {
     val p: *u8 = ?real_composite[0];
-    var info: GlyphInfo;
-    if (!glyph_header(p, 24, 0, ?info)) { ret 1; }
-    if (!is_composite(?info)) { ret 1; }
-    if (info.x_min != 201 || info.y_min != -375) { ret 1; }
-    if (info.x_max != 388 || info.y_max != 1556) { ret 1; }
+    val info: res[GlyphInfo, FontError] = glyph_header(p, 24, 0);
+    if (!sel info.ok) { ret 1; }
+    if (!is_composite(?info.ok)) { ret 1; }
+    if (info.ok.x_min != 201 || info.ok.y_min != -375) { ret 1; }
+    if (info.ok.x_max != 388 || info.ok.y_max != 1556) { ret 1; }
 
     # word args, so the record runs 8 bytes
-    var c: Component;
-    var next: usize = 0;
-    if (!read_component(p, 24, COMPONENTS_OFFSET, ?c, ?next)) { ret 1; }
-    if (next != 18) { ret 1; }
+    val first: res[Component, FontError] = read_component(p, 24, COMPONENTS_OFFSET);
+    if (!sel first.ok) { ret 1; }
+    var c: Component = first.ok;
+    if (c.next != 18) { ret 1; }
     if (c.glyph != 724) { ret 1; }
     if ((c.flags & ARG_1_AND_2_ARE_WORDS) == 0) { ret 1; }
     if ((c.flags & MORE_COMPONENTS) == 0) { ret 1; }
@@ -575,8 +616,10 @@ test "glyf: real font composite component records" {
     if (c.m.a != 1.0 || c.m.b != 0.0 || c.m.c != 0.0 || c.m.d != 1.0) { ret 1; }
 
     # byte args, so the record runs 6 bytes and ends the chain
-    if (!read_component(p, 24, next, ?c, ?next)) { ret 1; }
-    if (next != 24) { ret 1; }
+    val second: res[Component, FontError] = read_component(p, 24, c.next);
+    if (!sel second.ok) { ret 1; }
+    c = second.ok;
+    if (c.next != 24) { ret 1; }
     if (c.glyph != 79) { ret 1; }
     if ((c.flags & ARG_1_AND_2_ARE_WORDS) != 0) { ret 1; }
     if ((c.flags & MORE_COMPONENTS) != 0) { ret 1; }
@@ -587,6 +630,13 @@ test "glyf: real font composite component records" {
 # no font on this system places a component with a scale, so the transform
 # variants are exercised against records built here rather than lifted from one
 var comp_buf: [32]u8;
+
+# unwrap a decoded component, reporting a failed read as a record with next at 0
+fun component_or_zero(r: res[Component, FontError]) Component {
+    if (sel r.ok) { ret r.ok; }
+    var zero: Component;
+    ret zero;
+}
 
 # a component record: flags, glyph index, then two i16 args
 fun build_component(flags: u16, glyph: u16, arg1: u16, arg2: u16) {
@@ -600,10 +650,8 @@ fun build_component(flags: u16, glyph: u16, arg1: u16, arg2: u16) {
 test "glyf: component single scale" {
     build_component(ARGS_ARE_XY_VALUES | WE_HAVE_A_SCALE, 7, 30, 40);
     w16(?comp_buf[0], 8, 0x2000);   # F2Dot14 0.5
-    var c: Component;
-    var next: usize = 0;
-    if (!read_component(?comp_buf[0], 32, 0, ?c, ?next)) { ret 1; }
-    if (next != 10) { ret 1; }
+    var c: Component = component_or_zero(read_component(?comp_buf[0], 32, 0));
+    if (c.next != 10) { ret 1; }
     if (c.glyph != 7) { ret 1; }
     if (c.m.a != 0.5 || c.m.d != 0.5) { ret 1; }
     if (c.m.b != 0.0 || c.m.c != 0.0) { ret 1; }
@@ -616,10 +664,8 @@ test "glyf: component x and y scale" {
     build_component(ARGS_ARE_XY_VALUES | WE_HAVE_AN_X_AND_Y_SCALE, 7, 0, 0);
     w16(?comp_buf[0], 8, 0x2000);    # x scale 0.5
     w16(?comp_buf[0], 10, 0xC000);   # y scale -1.0
-    var c: Component;
-    var next: usize = 0;
-    if (!read_component(?comp_buf[0], 32, 0, ?c, ?next)) { ret 1; }
-    if (next != 12) { ret 1; }
+    var c: Component = component_or_zero(read_component(?comp_buf[0], 32, 0));
+    if (c.next != 12) { ret 1; }
     if (c.m.a != 0.5 || c.m.d != -1.0) { ret 1; }
     if (c.m.b != 0.0 || c.m.c != 0.0) { ret 1; }
     ret 0;
@@ -631,10 +677,8 @@ test "glyf: component two by two" {
     w16(?comp_buf[0], 10, 0x1000);   # b = 0.25
     w16(?comp_buf[0], 12, 0xE000);   # c = -0.5
     w16(?comp_buf[0], 14, 0x2000);   # d = 0.5
-    var c: Component;
-    var next: usize = 0;
-    if (!read_component(?comp_buf[0], 32, 0, ?c, ?next)) { ret 1; }
-    if (next != 16) { ret 1; }
+    var c: Component = component_or_zero(read_component(?comp_buf[0], 32, 0));
+    if (c.next != 16) { ret 1; }
     if (c.m.a != 1.0 || c.m.b != 0.25) { ret 1; }
     if (c.m.c != -0.5 || c.m.d != 0.5) { ret 1; }
     ret 0;
@@ -646,10 +690,8 @@ test "glyf: component byte args are signed offsets" {
     w16(p, 2, 7);
     comp_buf[4] = 0xF6;   # -10
     comp_buf[5] = 0x14;   # +20
-    var c: Component;
-    var next: usize = 0;
-    if (!read_component(p, 32, 0, ?c, ?next)) { ret 1; }
-    if (next != 6) { ret 1; }
+    var c: Component = component_or_zero(read_component(p, 32, 0));
+    if (c.next != 6) { ret 1; }
     if (c.m.dx != -10.0 || c.m.dy != 20.0) { ret 1; }
     ret 0;
 }
@@ -658,9 +700,7 @@ test "glyf: component point indices left unscaled" {
     # without ARGS_ARE_XY_VALUES the args are point indices, reported verbatim
     build_component(WE_HAVE_A_SCALE, 7, 12, 34);
     w16(?comp_buf[0], 8, 0x2000);
-    var c: Component;
-    var next: usize = 0;
-    if (!read_component(?comp_buf[0], 32, 0, ?c, ?next)) { ret 1; }
+    var c: Component = component_or_zero(read_component(?comp_buf[0], 32, 0));
     if ((c.flags & ARGS_ARE_XY_VALUES) != 0) { ret 1; }
     if (c.m.dx != 12.0 || c.m.dy != 34.0) { ret 1; }
     ret 0;
@@ -670,31 +710,30 @@ test "glyf: component scaled offset and grid rounding" {
     # a scaled offset passes through the 2x2, putting it on a half unit
     build_component(ARGS_ARE_XY_VALUES | WE_HAVE_A_SCALE | SCALED_COMPONENT_OFFSET, 7, 25, 0xFFF7);
     w16(?comp_buf[0], 8, 0x2000);   # 0.5
-    var c: Component;
-    var next: usize = 0;
-    if (!read_component(?comp_buf[0], 32, 0, ?c, ?next)) { ret 1; }
+    var c: Component = component_or_zero(read_component(?comp_buf[0], 32, 0));
     if (c.m.dx != 12.5 || c.m.dy != -4.5) { ret 1; }
 
     # ROUND_XY_TO_GRID snaps it to whole design units, halves away from zero
     build_component(ARGS_ARE_XY_VALUES | WE_HAVE_A_SCALE | SCALED_COMPONENT_OFFSET | ROUND_XY_TO_GRID, 7, 25, 0xFFF7);
     w16(?comp_buf[0], 8, 0x2000);
-    if (!read_component(?comp_buf[0], 32, 0, ?c, ?next)) { ret 1; }
+    c = component_or_zero(read_component(?comp_buf[0], 32, 0));
     if (c.m.dx != 13.0 || c.m.dy != -5.0) { ret 1; }
 
     # UNSCALED_COMPONENT_OFFSET wins over SCALED_COMPONENT_OFFSET
     build_component(ARGS_ARE_XY_VALUES | WE_HAVE_A_SCALE | SCALED_COMPONENT_OFFSET | UNSCALED_COMPONENT_OFFSET, 7, 25, 0xFFF7);
     w16(?comp_buf[0], 8, 0x2000);
-    if (!read_component(?comp_buf[0], 32, 0, ?c, ?next)) { ret 1; }
+    c = component_or_zero(read_component(?comp_buf[0], 32, 0));
     if (c.m.dx != 25.0 || c.m.dy != -9.0) { ret 1; }
     ret 0;
 }
 
 test "glyf: component record past the buffer rejected" {
     build_component(ARGS_ARE_XY_VALUES | WE_HAVE_A_TWO_BY_TWO, 7, 0, 0);
-    var c: Component;
-    var next: usize = 0;
-    # the record needs 16 bytes; the 2x2 runs past a 12-byte buffer
-    if (read_component(?comp_buf[0], 12, 0, ?c, ?next)) { ret 1; }
+    # the record needs 16 bytes, and the 2x2 runs past a 12-byte buffer
+    val r: res[Component, FontError] = read_component(?comp_buf[0], 12, 0);
+    if (!sel r.err) { ret 1; }
+    if (!sel r.err.truncated) { ret 2; }
+    if (r.err.truncated != 12) { ret 3; }
     ret 0;
 }
 

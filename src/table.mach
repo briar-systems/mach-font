@@ -8,9 +8,11 @@
 # reading out of bounds.
 
 use font.read;
+use font.error.FontError;
 use std.types.bool.bool;
-use std.types.bool.true;
-use std.types.bool.false;
+use std.types.error.err;
+use std.types.option.opt;
+use std.types.result.res;
 use std.types.size.usize;
 
 # byte offset of the table directory, immediately after the 12-byte offset table
@@ -32,60 +34,64 @@ pub rec Table {
     length: u32;
 }
 
-# report whether the file begins with a truetype-outline sfnt version
+# check that the file begins with a truetype-outline sfnt version
 #
 # rejects 'OTTO' (CFF outlines) and 'ttcf' (font collections), which carry no
 # glyf table and are out of scope.
 # ---
 # data: pointer to the first byte of the file
 # len:  number of bytes addressable through data
-# ret:  true when the sfnt version denotes truetype outlines
-pub fun is_truetype(data: *u8, len: usize) bool {
-    var v: u32 = 0;
-    if (!read.read_u32(data, len, 0, ?v)) { ret false; }
-    ret v == SFNT_TRUETYPE || v == SFNT_TRUE;
+# ret:  ok for truetype outlines, not_truetype with the version read, or truncated
+pub fun check_truetype(data: *u8, len: usize) err[FontError] {
+    val v: res[u32, FontError] = read.read_u32(data, len, 0);
+    if (sel v.err) { ret err[FontError].err{v.err}; }
+    if (v.ok != SFNT_TRUETYPE && v.ok != SFNT_TRUE) {
+        ret err[FontError].err{FontError.not_truetype{v.ok}};
+    }
+    ret err[FontError].ok{};
 }
 
 # read the number of tables declared by the offset table
 # ---
 # data: pointer to the first byte of the file
 # len:  number of bytes addressable through data
-# out:  receives the table count on success
-# ret:  true when the count field is within len, false otherwise
-pub fun num_tables(data: *u8, len: usize, out: *u16) bool {
-    ret read.read_u16(data, len, 4, out);
+# ret:  the table count, or truncated
+pub fun num_tables(data: *u8, len: usize) res[u16, FontError] {
+    ret read.read_u16(data, len, 4);
 }
 
 # locate a table by its four-byte tag
 #
 # scans the directory for an entry whose tag matches, then reads that entry's
 # offset and length. the returned span is not itself range-checked against the
-# file; callers validate spans as they read table contents through font.read.
+# file, since callers validate spans as they read table contents through
+# font.read. a font without the table is not a failure, only a directory that
+# runs past the file is.
 # ---
 # data:       pointer to the first byte of the file
 # len:        number of bytes addressable through data
 # a, b, c, d: the four tag bytes to match (e.g. 'g','l','y','f')
-# out:        receives the table span on success
-# ret:        true when a matching, fully-present directory entry is found
-pub fun find_table(data: *u8, len: usize, a: u8, b: u8, c: u8, d: u8, out: *Table) bool {
-    var count: u16 = 0;
-    if (!num_tables(data, len, ?count)) { ret false; }
+# ret:        the table span, none when the directory lists no such table, or truncated
+pub fun find_table(data: *u8, len: usize, a: u8, b: u8, c: u8, d: u8) res[opt[Table], FontError] {
+    val count: res[u16, FontError] = num_tables(data, len);
+    if (sel count.err) { ret res[opt[Table], FontError].err{count.err}; }
 
     var i: usize = 0;
-    for (i < count::usize) {
+    for (i < count.ok::usize) {
         val entry: usize = DIR_OFFSET + i * ENTRY_SIZE;
-        if (read.tag_eq(data, len, entry, a, b, c, d)) {
-            var off: u32 = 0;
-            var length: u32 = 0;
-            if (!read.read_u32(data, len, entry + 8, ?off)) { ret false; }
-            if (!read.read_u32(data, len, entry + 12, ?length)) { ret false; }
-            out[0] = Table{ offset: off, length: length };
-            ret true;
+        val same: res[bool, FontError] = read.tag_eq(data, len, entry, a, b, c, d);
+        if (sel same.err) { ret res[opt[Table], FontError].err{same.err}; }
+        if (same.ok) {
+            val off: res[u32, FontError] = read.read_u32(data, len, entry + 8);
+            if (sel off.err) { ret res[opt[Table], FontError].err{off.err}; }
+            val length: res[u32, FontError] = read.read_u32(data, len, entry + 12);
+            if (sel length.err) { ret res[opt[Table], FontError].err{length.err}; }
+            ret res[opt[Table], FontError].ok{opt[Table].some{Table{ offset: off.ok, length: length.ok }}};
         }
         i = i + 1;
     }
 
-    ret false;
+    ret res[opt[Table], FontError].ok{opt[Table].none{}};
 }
 
 # write a big-endian u16 into a test fixture buffer
@@ -133,48 +139,59 @@ fun build_dir() {
 
 test "table: truetype sfnt version accepted" {
     build_dir();
-    if (!is_truetype(?dir_buf[0], 44)) { ret 1; }
+    val r: err[FontError] = check_truetype(?dir_buf[0], 44);
+    if (!sel r.ok) { ret 1; }
     ret 0;
 }
 
 test "table: OTTO rejected" {
     build_dir();
     put_u32(?dir_buf[0], 0, 0x4F54544F);
-    if (is_truetype(?dir_buf[0], 44)) { ret 1; }
+    val r: err[FontError] = check_truetype(?dir_buf[0], 44);
+    if (!sel r.err) { ret 1; }
+    if (!sel r.err.not_truetype) { ret 2; }
+    if (r.err.not_truetype != 0x4F54544F) { ret 3; }
     ret 0;
 }
 
 test "table: num_tables" {
     build_dir();
-    var n: u16 = 0;
-    if (!num_tables(?dir_buf[0], 44, ?n)) { ret 1; }
-    if (n != 2) { ret 1; }
+    val n: res[u16, FontError] = num_tables(?dir_buf[0], 44);
+    if (!sel n.ok) { ret 1; }
+    if (n.ok != 2) { ret 2; }
     ret 0;
+}
+
+# unwrap a located table, reporting a missing or failed lookup as a zero span
+fun found(r: res[opt[Table], FontError]) Table {
+    if (sel r.err) { ret Table{ offset: 0, length: 0 }; }
+    if (sel r.ok.none) { ret Table{ offset: 0, length: 0 }; }
+    ret r.ok.some;
 }
 
 test "table: find present entries" {
     build_dir();
-    var t: Table;
-    if (!find_table(?dir_buf[0], 44, 'g', 'l', 'y', 'f', ?t)) { ret 1; }
-    if (t.offset != 200) { ret 1; }
-    if (t.length != 48) { ret 1; }
-    if (!find_table(?dir_buf[0], 44, 'c', 'm', 'a', 'p', ?t)) { ret 1; }
-    if (t.offset != 100) { ret 1; }
-    if (t.length != 16) { ret 1; }
+    val glyf: Table = found(find_table(?dir_buf[0], 44, 'g', 'l', 'y', 'f'));
+    if (glyf.offset != 200 || glyf.length != 48) { ret 1; }
+    val cmap: Table = found(find_table(?dir_buf[0], 44, 'c', 'm', 'a', 'p'));
+    if (cmap.offset != 100 || cmap.length != 16) { ret 2; }
     ret 0;
 }
 
 test "table: missing tag" {
     build_dir();
-    var t: Table;
-    if (find_table(?dir_buf[0], 44, 'h', 'e', 'a', 'd', ?t)) { ret 1; }
+    val r: res[opt[Table], FontError] = find_table(?dir_buf[0], 44, 'h', 'e', 'a', 'd');
+    if (!sel r.ok) { ret 1; }
+    if (!sel r.ok.none) { ret 2; }
     ret 0;
 }
 
 test "table: truncated directory rejected" {
     build_dir();
-    var t: Table;
-    # only the offset table plus one full entry fit; the second entry's span runs past len.
-    if (find_table(?dir_buf[0], 28, 'g', 'l', 'y', 'f', ?t)) { ret 1; }
+    # only the offset table plus one full entry fit, so the second entry's span runs past len.
+    val r: res[opt[Table], FontError] = find_table(?dir_buf[0], 28, 'g', 'l', 'y', 'f');
+    if (!sel r.err) { ret 1; }
+    if (!sel r.err.truncated) { ret 2; }
+    if (r.err.truncated != 28) { ret 3; }
     ret 0;
 }

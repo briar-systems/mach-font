@@ -10,16 +10,19 @@
 # allocates nothing.
 
 use font.glyf;
+use font.error.FontError;
 use std.types.bool.bool;
 use std.types.bool.true;
 use std.types.bool.false;
+use std.types.error.err;
+use std.types.result.res;
 use std.types.size.usize;
 
 # supersampling factor per axis; coverage is sampled on an SS by SS subgrid
 val SS: usize = 4;
 # subdivision recursion cap for flattening a quadratic segment
 val MAX_DEPTH: usize = 16;
-# squared flatness tolerance in pixels; below this a quad is emitted as a line
+# squared flatness tolerance in pixels, below which a quad is emitted as a line
 val TOL_SQ: f32 = 0.1;
 
 # a directed line segment in pixel space (y increases downward)
@@ -33,16 +36,16 @@ pub rec Edge {
     y1: f32;
 }
 
-# append an edge, returning false if the buffer is full
-fun push_edge(edges: *Edge, cap: usize, count: *usize, x0: f32, y0: f32, x1: f32, y1: f32) bool {
-    if (count[0] >= cap) { ret false; }
+# append an edge, refusing when the buffer is full
+fun push_edge(edges: *Edge, cap: usize, count: *usize, x0: f32, y0: f32, x1: f32, y1: f32) err[FontError] {
+    if (count[0] >= cap) { ret err[FontError].err{FontError.edges_full{}}; }
     edges[count[0]] = Edge{ x0: x0, y0: y0, x1: x1, y1: y1 };
     count[0] = count[0] + 1;
-    ret true;
+    ret err[FontError].ok{};
 }
 
 # recursively flatten a quadratic bezier into edges by midpoint subdivision
-fun flatten_quad(edges: *Edge, cap: usize, count: *usize, x0: f32, y0: f32, cx: f32, cy: f32, x1: f32, y1: f32, depth: usize) bool {
+fun flatten_quad(edges: *Edge, cap: usize, count: *usize, x0: f32, y0: f32, cx: f32, cy: f32, x1: f32, y1: f32, depth: usize) err[FontError] {
     # deviation of the control point from the chord midpoint bounds the flatness.
     val mx: f32 = (x0 + x1) * 0.5;
     val my: f32 = (y0 + y1) * 0.5;
@@ -59,7 +62,8 @@ fun flatten_quad(edges: *Edge, cap: usize, count: *usize, x0: f32, y0: f32, cx: 
     val midx: f32 = (ax + bx) * 0.5;
     val midy: f32 = (ay + by) * 0.5;
 
-    if (!flatten_quad(edges, cap, count, x0, y0, ax, ay, midx, midy, depth + 1)) { ret false; }
+    val head: err[FontError] = flatten_quad(edges, cap, count, x0, y0, ax, ay, midx, midy, depth + 1);
+    if (sel head.err) { ret head; }
     ret flatten_quad(edges, cap, count, midx, midy, bx, by, x1, y1, depth + 1);
 }
 
@@ -71,8 +75,8 @@ fun tx(pts: *glyf.Point, i: usize, scale: f32, x_off: f32, y_off: f32, height: f
 }
 
 # flatten one contour (points s..e inclusive) into edges
-fun flatten_contour(pts: *glyf.Point, s: usize, e: usize, scale: f32, x_off: f32, y_off: f32, height: f32, edges: *Edge, cap: usize, count: *usize) bool {
-    if (e < s + 1) { ret true; }
+fun flatten_contour(pts: *glyf.Point, s: usize, e: usize, scale: f32, x_off: f32, y_off: f32, height: f32, edges: *Edge, cap: usize, count: *usize) err[FontError] {
+    if (e < s + 1) { ret err[FontError].ok{}; }
 
     var sx: f32 = 0.0;
     var sy: f32 = 0.0;
@@ -117,10 +121,12 @@ fun flatten_contour(pts: *glyf.Point, s: usize, e: usize, scale: f32, x_off: f32
 
         if (pts[k].on_curve) {
             if (was_off) {
-                if (!flatten_quad(edges, cap, count, curx, cury, cx, cy, px, py, 0)) { ret false; }
+                val quad: err[FontError] = flatten_quad(edges, cap, count, curx, cury, cx, cy, px, py, 0);
+                if (sel quad.err) { ret quad; }
             }
             or {
-                if (!push_edge(edges, cap, count, curx, cury, px, py)) { ret false; }
+                val line: err[FontError] = push_edge(edges, cap, count, curx, cury, px, py);
+                if (sel line.err) { ret line; }
             }
             curx = px;
             cury = py;
@@ -131,7 +137,8 @@ fun flatten_contour(pts: *glyf.Point, s: usize, e: usize, scale: f32, x_off: f32
                 # implied on-curve midpoint between the two control points.
                 val mx: f32 = (cx + px) * 0.5;
                 val my: f32 = (cy + py) * 0.5;
-                if (!flatten_quad(edges, cap, count, curx, cury, cx, cy, mx, my, 0)) { ret false; }
+                val quad: err[FontError] = flatten_quad(edges, cap, count, curx, cury, cx, cy, mx, my, 0);
+                if (sel quad.err) { ret quad; }
                 curx = mx;
                 cury = my;
             }
@@ -146,7 +153,8 @@ fun flatten_contour(pts: *glyf.Point, s: usize, e: usize, scale: f32, x_off: f32
         if (was_off) {
             val mx: f32 = (cx + scx) * 0.5;
             val my: f32 = (cy + scy) * 0.5;
-            if (!flatten_quad(edges, cap, count, curx, cury, cx, cy, mx, my, 0)) { ret false; }
+            val quad: err[FontError] = flatten_quad(edges, cap, count, curx, cury, cx, cy, mx, my, 0);
+            if (sel quad.err) { ret quad; }
             curx = mx;
             cury = my;
         }
@@ -163,8 +171,7 @@ fun flatten_contour(pts: *glyf.Point, s: usize, e: usize, scale: f32, x_off: f32
 #
 # each contour's quadratic segments are subdivided into line edges and appended
 # to the caller's edge buffer. coordinates are scaled uniformly and the y axis is
-# flipped so font-up maps to bitmap rows growing downward. reports failure only
-# when the edge buffer overflows.
+# flipped so font-up maps to bitmap rows growing downward.
 # ---
 # pts:          extracted glyph points
 # num_points:   number of points in pts
@@ -175,9 +182,8 @@ fun flatten_contour(pts: *glyf.Point, s: usize, e: usize, scale: f32, x_off: f32
 # height:       bitmap height in pixels, used for the y flip
 # edges:        buffer receiving the flattened edges
 # cap:          capacity of edges
-# out_count:    receives the number of edges written
-# ret:          true when every contour fit in the edge buffer
-pub fun flatten(pts: *glyf.Point, num_points: u16, ends: *u16, num_contours: u16, scale: f32, x_off: f32, y_off: f32, height: u16, edges: *Edge, cap: usize, out_count: *usize) bool {
+# ret:          the number of edges written, or contour_end or edges_full
+pub fun flatten(pts: *glyf.Point, num_points: u16, ends: *u16, num_contours: u16, scale: f32, x_off: f32, y_off: f32, height: u16, edges: *Edge, cap: usize) res[usize, FontError] {
     var count: usize = 0;
     val h: f32 = height::f32;
 
@@ -185,14 +191,14 @@ pub fun flatten(pts: *glyf.Point, num_points: u16, ends: *u16, num_contours: u16
     var start: usize = 0;
     for (j < num_contours::usize) {
         val end: usize = ends[j]::usize;
-        if (end >= num_points::usize) { ret false; }
-        if (!flatten_contour(pts, start, end, scale, x_off, y_off, h, edges, cap, ?count)) { ret false; }
+        if (end >= num_points::usize) { ret res[usize, FontError].err{FontError.contour_end{ends[j]}}; }
+        val contour: err[FontError] = flatten_contour(pts, start, end, scale, x_off, y_off, h, edges, cap, ?count);
+        if (sel contour.err) { ret res[usize, FontError].err{contour.err}; }
         start = end + 1;
         j = j + 1;
     }
 
-    out_count[0] = count;
-    ret true;
+    ret res[usize, FontError].ok{count};
 }
 
 # compute the nonzero winding number at a sample point against all edges
@@ -270,18 +276,36 @@ fun build_square() {
 
 test "raster: flatten square yields four edges" {
     build_square();
-    var n: usize = 0;
     # scale 100 font units to 8 pixels
-    if (!flatten(?sq_pts[0], 4, ?sq_ends[0], 1, 0.08, 0.0, 0.0, 8, ?sq_edges[0], 64, ?n)) { ret 1; }
-    if (n != 4) { ret 1; }
+    val n: res[usize, FontError] = flatten(?sq_pts[0], 4, ?sq_ends[0], 1, 0.08, 0.0, 0.0, 8, ?sq_edges[0], 64);
+    if (!sel n.ok) { ret 1; }
+    if (n.ok != 4) { ret 2; }
+    ret 0;
+}
+
+test "raster: full edge buffer rejected" {
+    build_square();
+    val n: res[usize, FontError] = flatten(?sq_pts[0], 4, ?sq_ends[0], 1, 0.08, 0.0, 0.0, 8, ?sq_edges[0], 3);
+    if (!sel n.err) { ret 1; }
+    if (!sel n.err.edges_full) { ret 2; }
+    ret 0;
+}
+
+test "raster: contour end past the points rejected" {
+    build_square();
+    sq_ends[0] = 4;
+    val n: res[usize, FontError] = flatten(?sq_pts[0], 4, ?sq_ends[0], 1, 0.08, 0.0, 0.0, 8, ?sq_edges[0], 64);
+    if (!sel n.err) { ret 1; }
+    if (!sel n.err.contour_end) { ret 2; }
+    if (n.err.contour_end != 4) { ret 3; }
     ret 0;
 }
 
 test "raster: fill square covers interior" {
     build_square();
-    var n: usize = 0;
-    if (!flatten(?sq_pts[0], 4, ?sq_ends[0], 1, 0.08, 0.0, 0.0, 8, ?sq_edges[0], 64, ?n)) { ret 1; }
-    fill(?sq_edges[0], n, ?sq_bmp[0], 8, 8);
+    val n: res[usize, FontError] = flatten(?sq_pts[0], 4, ?sq_ends[0], 1, 0.08, 0.0, 0.0, 8, ?sq_edges[0], 64);
+    if (!sel n.ok) { ret 1; }
+    fill(?sq_edges[0], n.ok, ?sq_bmp[0], 8, 8);
     # the 100x100-unit square scaled by 0.08 covers the whole 8x8 bitmap.
     if (sq_bmp[3 * 8 + 3] != 255) { ret 1; }   # center fully covered
     if (sq_bmp[3 * 8 + 4] != 255) { ret 1; }
@@ -290,11 +314,11 @@ test "raster: fill square covers interior" {
 
 test "raster: fill leaves exterior empty" {
     build_square();
-    var n: usize = 0;
     # scale the square to only the top-left 4x4 region of a 16x16 bitmap
-    if (!flatten(?sq_pts[0], 4, ?sq_ends[0], 1, 0.04, 0.0, 12.0, 16, ?sq_edges[0], 64, ?n)) { ret 1; }
+    val n: res[usize, FontError] = flatten(?sq_pts[0], 4, ?sq_ends[0], 1, 0.04, 0.0, 12.0, 16, ?sq_edges[0], 64);
+    if (!sel n.ok) { ret 1; }
     var big: [256]u8;
-    fill(?sq_edges[0], n, ?big[0], 16, 16);
+    fill(?sq_edges[0], n.ok, ?big[0], 16, 16);
     # a pixel far from the square is empty
     if (big[15 * 16 + 15] != 0) { ret 1; }
     ret 0;
