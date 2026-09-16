@@ -7,8 +7,8 @@
 # active encoding is head's indexToLocFormat. all reads are bounds-checked through
 # font.read.
 
-use font.read;
 use font.error.FontError;
+use font.read;
 use std.types.bool.bool;
 use std.types.bool.false;
 use std.types.result.res;
@@ -52,14 +52,14 @@ pub fun glyph_range(data: *u8, len: usize, off: usize, format: i16, glyph: u16) 
         val e: res[u16, FontError] = read.read_u16(data, len, off + g * 2 + 2);
         if (sel e.err) { ret res[GlyphRange, FontError].err{e.err}; }
         # short offsets are stored halved.
-        r = GlyphRange{ start: s.ok::u32 * 2, end: e.ok::u32 * 2 };
+        r = GlyphRange{start: s.ok::u32 * 2, end: e.ok::u32 * 2};
     }
     or (format == 1) {
         val s: res[u32, FontError] = read.read_u32(data, len, off + g * 4);
         if (sel s.err) { ret res[GlyphRange, FontError].err{s.err}; }
         val e: res[u32, FontError] = read.read_u32(data, len, off + g * 4 + 4);
         if (sel e.err) { ret res[GlyphRange, FontError].err{e.err}; }
-        r = GlyphRange{ start: s.ok, end: e.ok };
+        r = GlyphRange{start: s.ok, end: e.ok};
     }
     or {
         ret res[GlyphRange, FontError].err{FontError.loca_format{format}};
@@ -92,13 +92,13 @@ fun is_range(r: res[GlyphRange, FontError], start: u32, end: u32) bool {
 test "loca: short format halved offsets" {
     # entries for 3 glyphs + terminator: 0, 6, 6, 20 (stored halved)
     w16(?loca_buf[0], 0, 0);
-    w16(?loca_buf[0], 2, 3);    # 6 / 2
-    w16(?loca_buf[0], 4, 3);    # 6 / 2 -> glyph 1 empty
-    w16(?loca_buf[0], 6, 10);   # 20 / 2
+    w16(?loca_buf[0], 2, 3); # 6 / 2
+    w16(?loca_buf[0], 4, 3); # 6 / 2 -> glyph 1 empty
+    w16(?loca_buf[0], 6, 10); # 20 / 2
     if (!is_range(glyph_range(?loca_buf[0], 8, 0, 0, 0), 0, 6)) { ret 1; }
     val empty: res[GlyphRange, FontError] = glyph_range(?loca_buf[0], 8, 0, 0, 1);
-    if (!sel empty.ok) { ret 2; }
-    if (!is_empty(?empty.ok) || empty.ok.start != 6) { ret 3; }
+    if (!sel empty.ok)                                           { ret 2; }
+    if (!is_empty(?empty.ok) || empty.ok.start != 6)             { ret 3; }
     if (!is_range(glyph_range(?loca_buf[0], 8, 0, 0, 2), 6, 20)) { ret 4; }
     ret 0;
 }
@@ -113,14 +113,14 @@ test "loca: long format direct offsets" {
 
 test "loca: truncated rejected" {
     val r: res[GlyphRange, FontError] = glyph_range(?loca_buf[0], 3, 0, 0, 0);
-    if (!sel r.err) { ret 1; }
+    if (!sel r.err)           { ret 1; }
     if (!sel r.err.truncated) { ret 2; }
     ret 0;
 }
 
 test "loca: unknown format rejected" {
     val r: res[GlyphRange, FontError] = glyph_range(?loca_buf[0], 24, 0, 2, 0);
-    if (!sel r.err) { ret 1; }
+    if (!sel r.err)             { ret 1; }
     if (!sel r.err.loca_format) { ret 2; }
     if (r.err.loca_format != 2) { ret 3; }
     ret 0;
@@ -130,7 +130,7 @@ test "loca: end before start rejected" {
     w16(?loca_buf[0], 0, 8);
     w16(?loca_buf[0], 2, 4);
     val r: res[GlyphRange, FontError] = glyph_range(?loca_buf[0], 8, 0, 0, 0);
-    if (!sel r.err) { ret 1; }
+    if (!sel r.err)                { ret 1; }
     if (!sel r.err.inverted_glyph) { ret 2; }
     ret 0;
 }

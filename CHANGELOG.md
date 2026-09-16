@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- ci: CI runs the family pipeline (`briar-systems/.github` `mach-lib.yml`) on the pinned, checksum-verified mach seed: debug and release build and test, `mach fmt --check` and an all-targets release build on x86_64-linux for pull requests into dev, plus native aarch64-linux, windows and darwin legs for pull requests into main. A `gate` job is the one required check.
 - build: Moved to Mach 5.0 and std 2.1. The manifest states every profile in
   full and marks its defaults, std is pinned as the `dep/std` gitlink at
   `tag/v2.1.0` under the `std` project id, and `mach.lock` is gone.
@@ -51,6 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     zero units-per-em.
 
 ### Added
+- manifest: `linux-arm64` and `darwin-aarch64` targets, so the native aarch64 hosts build and test for themselves instead of falling back to linux-x86_64.
 - info: `glyph_info(f, glyph)` reads a glyph's header, none for an empty glyph,
   so a consumer no longer resolves loca and glyf itself.
 

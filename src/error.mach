@@ -46,27 +46,27 @@ pub tag TableId: u8 {
 # contours_full:           the caller's contour-end buffer is too small
 # edges_full:              the caller's edge buffer is too small
 pub tag FontError: u8 {
-    truncated:               usize;
-    not_truetype:            u32;
-    missing_table:           TableId;
-    bad_magic:               u32;
+    truncated:     usize;
+    not_truetype:  u32;
+    missing_table: TableId;
+    bad_magic:     u32;
     zero_units_per_em;
-    loca_format:             i16;
-    inverted_glyph:          u16;
-    glyph_out_of_range:      u16;
+    loca_format:        i16;
+    inverted_glyph:     u16;
+    glyph_out_of_range: u16;
     no_long_metrics;
-    maxp_version:            u32;
-    vertical_span:           i32;
+    maxp_version:  u32;
+    vertical_span: i32;
     no_unicode_cmap;
-    cmap_format:             u16;
-    kern_version:            u16;
-    kern_subtable_length:    u16;
+    cmap_format:          u16;
+    kern_version:         u16;
+    kern_subtable_length: u16;
     no_horizontal_kern;
     composite_glyph;
     composite_depth;
     point_matched_component;
     too_many_points;
-    contour_end:             u16;
+    contour_end: u16;
     points_full;
     contours_full;
     edges_full;
