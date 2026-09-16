@@ -6,15 +6,23 @@
 # for monospaced runs. this module resolves one glyph's advance and bearing,
 # bounds-checked through font.read.
 
+use font.error.FontError;
 use font.read;
-use std.types.bool.bool;
-use std.types.bool.true;
-use std.types.bool.false;
+use std.types.result.res;
 use std.types.size.usize;
+
+# one glyph's horizontal metrics in font units
+# ---
+# advance: advance width
+# lsb:     left-side bearing
+pub rec HMetrics {
+    advance: u16;
+    lsb:     i16;
+}
 
 # read a glyph's advance width and left-side bearing from hmtx
 #
-# for a glyph index below num_h_metrics the pair is read directly; for a higher
+# for a glyph index below num_h_metrics the pair is read directly. for a higher
 # index the advance is the last long metric's advance and only the bearing is read
 # from the trailing bearing array.
 # ---
@@ -24,26 +32,27 @@ use std.types.size.usize;
 # num_h_metrics: count of long metrics, from hhea
 # num_glyphs:    glyph count, from maxp
 # glyph:         glyph index to resolve
-# out_advance:   receives the advance width in font units
-# out_lsb:       receives the left-side bearing in font units
-# ret:           true when the glyph is in range and its fields lie within len
-pub fun metrics(data: *u8, len: usize, off: usize, num_h_metrics: u16, num_glyphs: u16, glyph: u16, out_advance: *u16, out_lsb: *i16) bool {
-    if (num_h_metrics == 0) { ret false; }
-    if (glyph >= num_glyphs) { ret false; }
+# ret:           the metrics, or no_long_metrics, glyph_out_of_range or truncated
+pub fun metrics(data: *u8, len: usize, off: usize, num_h_metrics: u16, num_glyphs: u16, glyph: u16) res[HMetrics, FontError] {
+    if (num_h_metrics == 0)  { ret res[HMetrics, FontError].err{FontError.no_long_metrics{}}; }
+    if (glyph >= num_glyphs) { ret res[HMetrics, FontError].err{FontError.glyph_out_of_range{glyph}}; }
 
     val n: usize = num_h_metrics::usize;
     val g: usize = glyph::usize;
 
-    if (g < n) {
-        if (!read.read_u16(data, len, off + g * 4, out_advance)) { ret false; }
-        if (!read.read_i16(data, len, off + g * 4 + 2, out_lsb)) { ret false; }
-        ret true;
+    # a trailing glyph shares the last long metric's advance and reads its own bearing.
+    var advance_at: usize = off + g * 4;
+    var lsb_at:     usize = off + g * 4 + 2;
+    if (g >= n) {
+        advance_at = off + (n - 1) * 4;
+        lsb_at     = off + n * 4 + (g - n) * 2;
     }
 
-    if (!read.read_u16(data, len, off + (n - 1) * 4, out_advance)) { ret false; }
-    val lsb_off: usize = off + n * 4 + (g - n) * 2;
-    if (!read.read_i16(data, len, lsb_off, out_lsb)) { ret false; }
-    ret true;
+    val advance: res[u16, FontError] = read.read_u16(data, len, advance_at);
+    if (sel advance.err) { ret res[HMetrics, FontError].err{advance.err}; }
+    val lsb: res[i16, FontError] = read.read_i16(data, len, lsb_at);
+    if (sel lsb.err) { ret res[HMetrics, FontError].err{lsb.err}; }
+    ret res[HMetrics, FontError].ok{HMetrics{advance: advance.ok, lsb: lsb.ok}};
 }
 
 fun w16(buf: *u8, off: usize, v: u16) {
@@ -55,46 +64,55 @@ fun w16(buf: *u8, off: usize, v: u16) {
 var hmtx_buf: [12]u8;
 
 fun build_hmtx() {
-    w16(?hmtx_buf[0], 0, 600);      # glyph 0 advance
-    w16(?hmtx_buf[0], 2, 30);       # glyph 0 lsb
-    w16(?hmtx_buf[0], 4, 700);      # glyph 1 advance
-    w16(?hmtx_buf[0], 6, 0xFFF6);   # glyph 1 lsb = -10
-    w16(?hmtx_buf[0], 8, 50);       # glyph 2 lsb
-    w16(?hmtx_buf[0], 10, 60);      # glyph 3 lsb
+    w16(?hmtx_buf[0], 0, 600); # glyph 0 advance
+    w16(?hmtx_buf[0], 2, 30); # glyph 0 lsb
+    w16(?hmtx_buf[0], 4, 700); # glyph 1 advance
+    w16(?hmtx_buf[0], 6, 0xFFF6); # glyph 1 lsb = -10
+    w16(?hmtx_buf[0], 8, 50); # glyph 2 lsb
+    w16(?hmtx_buf[0], 10, 60); # glyph 3 lsb
 }
 
 test "hmtx: long metric" {
     build_hmtx();
-    var adv: u16 = 0;
-    var lsb: i16 = 0;
-    if (!metrics(?hmtx_buf[0], 12, 0, 2, 4, 1, ?adv, ?lsb)) { ret 1; }
-    if (adv != 700) { ret 1; }
-    if (lsb != -10) { ret 1; }
+    val r: res[HMetrics, FontError] = metrics(?hmtx_buf[0], 12, 0, 2, 4, 1);
+    if (!sel r.ok)           { ret 1; }
+    if (r.ok.advance != 700) { ret 2; }
+    if (r.ok.lsb != -10)     { ret 3; }
     ret 0;
 }
 
 test "hmtx: trailing glyph shares last advance" {
     build_hmtx();
-    var adv: u16 = 0;
-    var lsb: i16 = 0;
-    if (!metrics(?hmtx_buf[0], 12, 0, 2, 4, 3, ?adv, ?lsb)) { ret 1; }
-    if (adv != 700) { ret 1; }
-    if (lsb != 60) { ret 1; }
+    val r: res[HMetrics, FontError] = metrics(?hmtx_buf[0], 12, 0, 2, 4, 3);
+    if (!sel r.ok)           { ret 1; }
+    if (r.ok.advance != 700) { ret 2; }
+    if (r.ok.lsb != 60)      { ret 3; }
     ret 0;
 }
 
 test "hmtx: glyph out of range rejected" {
     build_hmtx();
-    var adv: u16 = 0;
-    var lsb: i16 = 0;
-    if (metrics(?hmtx_buf[0], 12, 0, 2, 4, 4, ?adv, ?lsb)) { ret 1; }
+    val r: res[HMetrics, FontError] = metrics(?hmtx_buf[0], 12, 0, 2, 4, 4);
+    if (!sel r.err)                    { ret 1; }
+    if (!sel r.err.glyph_out_of_range) { ret 2; }
+    if (r.err.glyph_out_of_range != 4) { ret 3; }
     ret 0;
 }
 
 test "hmtx: zero long metrics rejected" {
     build_hmtx();
-    var adv: u16 = 0;
-    var lsb: i16 = 0;
-    if (metrics(?hmtx_buf[0], 12, 0, 0, 4, 0, ?adv, ?lsb)) { ret 1; }
+    val r: res[HMetrics, FontError] = metrics(?hmtx_buf[0], 12, 0, 0, 4, 0);
+    if (!sel r.err)                 { ret 1; }
+    if (!sel r.err.no_long_metrics) { ret 2; }
+    ret 0;
+}
+
+test "hmtx: truncated bearing array rejected" {
+    build_hmtx();
+    # glyph 3's bearing sits at 10..12, past a 10-byte table
+    val r: res[HMetrics, FontError] = metrics(?hmtx_buf[0], 10, 0, 2, 4, 3);
+    if (!sel r.err)            { ret 1; }
+    if (!sel r.err.truncated)  { ret 2; }
+    if (r.err.truncated != 10) { ret 3; }
     ret 0;
 }

@@ -1,18 +1,20 @@
 # the maximum profile table
 #
 # `maxp` states the glyph count, which bounds every glyph index and sizes the
-# `loca` array. the version 1.0 table adds storage maxima; the four point and
+# `loca` array. the version 1.0 table adds storage maxima. the four point and
 # contour bounds are how a caller sizes one set of outline buffers big enough for
 # every glyph in the font, composites included, without walking them all first.
 # the remaining 1.0 fields size a hinting engine's stacks and are out of scope.
 # every read is bounds-checked through font.read.
 
+use font.error.FontError;
 use font.read;
-use std.types.bool.bool;
-use std.types.bool.true;
-use std.types.bool.false;
+use std.types.option.opt;
+use std.types.result.res;
 use std.types.size.usize;
 
+# maxp version 0.5, which states only the glyph count
+val VERSION_0_5: u32 = 0x00005000;
 # maxp version 1.0, the only version carrying the storage maxima
 val VERSION_1_0: u32 = 0x00010000;
 
@@ -24,10 +26,9 @@ val VERSION_1_0: u32 = 0x00010000;
 # data: pointer to the first byte of the file
 # len:  number of bytes addressable through data
 # off:  byte offset of the maxp table
-# out:  receives the glyph count on success
-# ret:  true when the count field lies within len, false otherwise
-pub fun num_glyphs(data: *u8, len: usize, off: usize, out: *u16) bool {
-    ret read.read_u16(data, len, off + 4, out);
+# ret:  the glyph count, or truncated
+pub fun num_glyphs(data: *u8, len: usize, off: usize) res[u16, FontError] {
+    ret read.read_u16(data, len, off + 4);
 }
 
 # the outline storage maxima a caller sizes buffers from
@@ -47,25 +48,35 @@ pub rec Maxima {
 #
 # a caller that sizes its point and contour buffers to the larger of the simple
 # and composite maxima can extract any glyph in the font without resizing. only
-# version 1.0 declares them, so a 0.5 table reports failure.
+# version 1.0 declares them, so a 0.5 table has none.
 # ---
 # data: pointer to the first byte of the file
 # len:  number of bytes addressable through data
 # off:  byte offset of the maxp table
-# out:  receives the maxima on success
-# ret:  true when the table is version 1.0 and the fields lie within len
-pub fun storage_maxima(data: *u8, len: usize, off: usize, out: *Maxima) bool {
-    var version: u32 = 0;
-    if (!read.read_u32(data, len, off, ?version)) { ret false; }
-    if (version != VERSION_1_0) { ret false; }
+# ret:  the maxima, none for a 0.5 table, or maxp_version or truncated
+pub fun storage_maxima(data: *u8, len: usize, off: usize) res[opt[Maxima], FontError] {
+    val version: res[u32, FontError] = read.read_u32(data, len, off);
+    if (sel version.err)           { ret res[opt[Maxima], FontError].err{version.err}; }
+    if (version.ok == VERSION_0_5) { ret res[opt[Maxima], FontError].ok{opt[Maxima].none{}}; }
+    if (version.ok != VERSION_1_0) {
+        ret res[opt[Maxima], FontError].err{FontError.maxp_version{version.ok}};
+    }
 
-    var m: Maxima;
-    if (!read.read_u16(data, len, off + 6, ?m.max_points)) { ret false; }
-    if (!read.read_u16(data, len, off + 8, ?m.max_contours)) { ret false; }
-    if (!read.read_u16(data, len, off + 10, ?m.max_composite_points)) { ret false; }
-    if (!read.read_u16(data, len, off + 12, ?m.max_composite_contours)) { ret false; }
-    out[0] = m;
-    ret true;
+    val points: res[u16, FontError] = read.read_u16(data, len, off + 6);
+    if (sel points.err) { ret res[opt[Maxima], FontError].err{points.err}; }
+    val contours: res[u16, FontError] = read.read_u16(data, len, off + 8);
+    if (sel contours.err) { ret res[opt[Maxima], FontError].err{contours.err}; }
+    val composite_points: res[u16, FontError] = read.read_u16(data, len, off + 10);
+    if (sel composite_points.err) { ret res[opt[Maxima], FontError].err{composite_points.err}; }
+    val composite_contours: res[u16, FontError] = read.read_u16(data, len, off + 12);
+    if (sel composite_contours.err) { ret res[opt[Maxima], FontError].err{composite_contours.err}; }
+
+    ret res[opt[Maxima], FontError].ok{opt[Maxima].some{Maxima{
+        max_points:             points.ok,
+        max_contours:           contours.ok,
+        max_composite_points:   composite_points.ok,
+        max_composite_contours: composite_contours.ok,
+    }}};
 }
 
 fun w16(buf: *u8, off: usize, v: u16) {
@@ -78,47 +89,60 @@ var maxp_buf: [14]u8;
 fun build_maxp() {
     val p: *u8 = ?maxp_buf[0];
     w16(p, 0, 0x0001);
-    w16(p, 2, 0x0000);   # version 1.0
-    w16(p, 4, 300);      # numGlyphs
-    w16(p, 6, 120);      # maxPoints
-    w16(p, 8, 8);        # maxContours
-    w16(p, 10, 240);     # maxCompositePoints
-    w16(p, 12, 16);      # maxCompositeContours
+    w16(p, 2, 0x0000); # version 1.0
+    w16(p, 4, 300); # numGlyphs
+    w16(p, 6, 120); # maxPoints
+    w16(p, 8, 8); # maxContours
+    w16(p, 10, 240); # maxCompositePoints
+    w16(p, 12, 16); # maxCompositeContours
 }
 
 test "maxp: glyph count" {
     build_maxp();
-    var n: u16 = 0;
-    if (!num_glyphs(?maxp_buf[0], 6, 0, ?n)) { ret 1; }
-    if (n != 300) { ret 1; }
+    val n: res[u16, FontError] = num_glyphs(?maxp_buf[0], 6, 0);
+    if (!sel n.ok)   { ret 1; }
+    if (n.ok != 300) { ret 2; }
     ret 0;
 }
 
 test "maxp: truncated rejected" {
     build_maxp();
-    var n: u16 = 0;
-    if (num_glyphs(?maxp_buf[0], 5, 0, ?n)) { ret 1; }
+    val n: res[u16, FontError] = num_glyphs(?maxp_buf[0], 5, 0);
+    if (!sel n.err)           { ret 1; }
+    if (!sel n.err.truncated) { ret 2; }
     ret 0;
 }
 
 test "maxp: storage maxima" {
     build_maxp();
-    var m: Maxima;
-    if (!storage_maxima(?maxp_buf[0], 14, 0, ?m)) { ret 1; }
-    if (m.max_points != 120 || m.max_contours != 8) { ret 1; }
-    if (m.max_composite_points != 240 || m.max_composite_contours != 16) { ret 1; }
+    val r: res[opt[Maxima], FontError] = storage_maxima(?maxp_buf[0], 14, 0);
+    if (!sel r.ok)                                                                       { ret 1; }
+    if (!sel r.ok.some)                                                                  { ret 2; }
+    if (r.ok.some.max_points != 120 || r.ok.some.max_contours != 8)                      { ret 3; }
+    if (r.ok.some.max_composite_points != 240 || r.ok.some.max_composite_contours != 16) { ret 4; }
     ret 0;
 }
 
 test "maxp: version 0.5 has no maxima" {
     build_maxp();
     w16(?maxp_buf[0], 0, 0x0000);
-    w16(?maxp_buf[0], 2, 0x5000);   # version 0.5
-    var m: Maxima;
-    if (storage_maxima(?maxp_buf[0], 14, 0, ?m)) { ret 1; }
+    w16(?maxp_buf[0], 2, 0x5000); # version 0.5
+    val r: res[opt[Maxima], FontError] = storage_maxima(?maxp_buf[0], 14, 0);
+    if (!sel r.ok)      { ret 1; }
+    if (!sel r.ok.none) { ret 2; }
     # the glyph count still reads, at the same offset in either version
-    var n: u16 = 0;
-    if (!num_glyphs(?maxp_buf[0], 14, 0, ?n)) { ret 1; }
-    if (n != 300) { ret 1; }
+    val n: res[u16, FontError] = num_glyphs(?maxp_buf[0], 14, 0);
+    if (!sel n.ok)   { ret 3; }
+    if (n.ok != 300) { ret 4; }
+    ret 0;
+}
+
+test "maxp: unknown version rejected" {
+    build_maxp();
+    w16(?maxp_buf[0], 0, 0x0002);
+    val r: res[opt[Maxima], FontError] = storage_maxima(?maxp_buf[0], 14, 0);
+    if (!sel r.err)                       { ret 1; }
+    if (!sel r.err.maxp_version)          { ret 2; }
+    if (r.err.maxp_version != 0x00020000) { ret 3; }
     ret 0;
 }
