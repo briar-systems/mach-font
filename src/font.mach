@@ -6,19 +6,19 @@
 # scope grows from here: the big-endian reader is the shared foundation the table
 # parsers (glyf, cmap, hmtx, ...) and the rasterizer are built on.
 
+use font.cmap;
 use font.error;
-use font.read;
-use font.table;
+use font.glyf;
 use font.head;
-use font.maxp;
 use font.hhea;
 use font.hmtx;
-use font.cmap;
-use font.loca;
-use font.glyf;
-use font.kern;
-use font.raster;
 use font.info;
+use font.kern;
+use font.loca;
+use font.maxp;
+use font.raster;
+use font.read;
+use font.table;
 # links the startup entrypoint so `mach test` over this library produces a binary.
 use std.runtime;
 
@@ -70,9 +70,9 @@ fwd glyf.xform_apply;
 
 # kern's subtable selection and pair lookup carry the table name into the flat
 # surface, where cmap already holds the unqualified spellings.
-fwd KernPairs: kern.Pairs;
+fwd KernPairs:            kern.Pairs;
 fwd kern_select_subtable: kern.select_subtable;
-fwd kern_lookup: kern.lookup;
+fwd kern_lookup:          kern.lookup;
 
 fwd raster.Edge;
 fwd raster.flatten;

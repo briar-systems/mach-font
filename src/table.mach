@@ -7,8 +7,8 @@
 # font.read, so a truncated or malformed directory reports failure rather than
 # reading out of bounds.
 
-use font.read;
 use font.error.FontError;
+use font.read;
 use std.types.bool.bool;
 use std.types.error.err;
 use std.types.option.opt;
@@ -68,25 +68,25 @@ pub fun num_tables(data: *u8, len: usize) res[u16, FontError] {
 # font.read. a font without the table is not a failure, only a directory that
 # runs past the file is.
 # ---
-# data:       pointer to the first byte of the file
-# len:        number of bytes addressable through data
+# data: pointer to the first byte of the file
+# len:  number of bytes addressable through data
 # a, b, c, d: the four tag bytes to match (e.g. 'g','l','y','f')
-# ret:        the table span, none when the directory lists no such table, or truncated
+# ret: the table span, none when the directory lists no such table, or truncated
 pub fun find_table(data: *u8, len: usize, a: u8, b: u8, c: u8, d: u8) res[opt[Table], FontError] {
     val count: res[u16, FontError] = num_tables(data, len);
     if (sel count.err) { ret res[opt[Table], FontError].err{count.err}; }
 
     var i: usize = 0;
     for (i < count.ok::usize) {
-        val entry: usize = DIR_OFFSET + i * ENTRY_SIZE;
-        val same: res[bool, FontError] = read.tag_eq(data, len, entry, a, b, c, d);
+        val entry: usize                = DIR_OFFSET + i * ENTRY_SIZE;
+        val same:  res[bool, FontError] = read.tag_eq(data, len, entry, a, b, c, d);
         if (sel same.err) { ret res[opt[Table], FontError].err{same.err}; }
         if (same.ok) {
             val off: res[u32, FontError] = read.read_u32(data, len, entry + 8);
             if (sel off.err) { ret res[opt[Table], FontError].err{off.err}; }
             val length: res[u32, FontError] = read.read_u32(data, len, entry + 12);
             if (sel length.err) { ret res[opt[Table], FontError].err{length.err}; }
-            ret res[opt[Table], FontError].ok{opt[Table].some{Table{ offset: off.ok, length: length.ok }}};
+            ret res[opt[Table], FontError].ok{opt[Table].some{Table{offset: off.ok, length: length.ok}}};
         }
         i = i + 1;
     }
@@ -148,8 +148,8 @@ test "table: OTTO rejected" {
     build_dir();
     put_u32(?dir_buf[0], 0, 0x4F54544F);
     val r: err[FontError] = check_truetype(?dir_buf[0], 44);
-    if (!sel r.err) { ret 1; }
-    if (!sel r.err.not_truetype) { ret 2; }
+    if (!sel r.err)                       { ret 1; }
+    if (!sel r.err.not_truetype)          { ret 2; }
     if (r.err.not_truetype != 0x4F54544F) { ret 3; }
     ret 0;
 }
@@ -164,8 +164,8 @@ test "table: num_tables" {
 
 # unwrap a located table, reporting a missing or failed lookup as a zero span
 fun found(r: res[opt[Table], FontError]) Table {
-    if (sel r.err) { ret Table{ offset: 0, length: 0 }; }
-    if (sel r.ok.none) { ret Table{ offset: 0, length: 0 }; }
+    if (sel r.err)     { ret Table{offset: 0, length: 0}; }
+    if (sel r.ok.none) { ret Table{offset: 0, length: 0}; }
     ret r.ok.some;
 }
 
@@ -181,7 +181,7 @@ test "table: find present entries" {
 test "table: missing tag" {
     build_dir();
     val r: res[opt[Table], FontError] = find_table(?dir_buf[0], 44, 'h', 'e', 'a', 'd');
-    if (!sel r.ok) { ret 1; }
+    if (!sel r.ok)      { ret 1; }
     if (!sel r.ok.none) { ret 2; }
     ret 0;
 }
@@ -190,8 +190,8 @@ test "table: truncated directory rejected" {
     build_dir();
     # only the offset table plus one full entry fit, so the second entry's span runs past len.
     val r: res[opt[Table], FontError] = find_table(?dir_buf[0], 28, 'g', 'l', 'y', 'f');
-    if (!sel r.err) { ret 1; }
-    if (!sel r.err.truncated) { ret 2; }
+    if (!sel r.err)            { ret 1; }
+    if (!sel r.err.truncated)  { ret 2; }
     if (r.err.truncated != 28) { ret 3; }
     ret 0;
 }

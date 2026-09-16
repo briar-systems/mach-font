@@ -9,8 +9,8 @@
 # and only a malformed or truncated subtable reports failure. all reads are
 # bounds-checked through font.read.
 
-use font.read;
 use font.error.FontError;
+use font.read;
 use std.types.bool.bool;
 use std.types.bool.false;
 use std.types.result.res;
@@ -31,12 +31,12 @@ pub fun select_subtable(data: *u8, len: usize, cmap_off: usize) res[usize, FontE
     val count: res[u16, FontError] = read.read_u16(data, len, cmap_off + 2);
     if (sel count.err) { ret res[usize, FontError].err{count.err}; }
 
-    var best_score: i32 = 0;
+    var best_score: i32   = 0;
     var best_off:   usize = 0;
 
     var i: usize = 0;
     for (i < count.ok::usize) {
-        val rec: usize = cmap_off + 4 + i * 8;
+        val rec:      usize               = cmap_off + 4 + i * 8;
         val platform: res[u16, FontError] = read.read_u16(data, len, rec);
         if (sel platform.err) { ret res[usize, FontError].err{platform.err}; }
         val encoding: res[u16, FontError] = read.read_u16(data, len, rec + 2);
@@ -122,11 +122,11 @@ fun lookup_4(data: *u8, len: usize, sub_off: usize, codepoint: u32) res[u16, Fon
 fun segment_4(data: *u8, len: usize, i: usize, start_base: usize, delta_base: usize, range_base: usize, c: u16) res[u16, FontError] {
     val start_code: res[u16, FontError] = read.read_u16(data, len, start_base + i * 2);
     if (sel start_code.err) { ret res[u16, FontError].err{start_code.err}; }
-    if (c < start_code.ok) { ret res[u16, FontError].ok{0}; }
+    if (c < start_code.ok)  { ret res[u16, FontError].ok{0}; }
 
     val id_delta: res[i16, FontError] = read.read_i16(data, len, delta_base + i * 2);
     if (sel id_delta.err) { ret res[u16, FontError].err{id_delta.err}; }
-    val range_at: usize = range_base + i * 2;
+    val range_at:  usize               = range_base + i * 2;
     val range_off: res[u16, FontError] = read.read_u16(data, len, range_at);
     if (sel range_off.err) { ret res[u16, FontError].err{range_off.err}; }
 
@@ -138,8 +138,8 @@ fun segment_4(data: *u8, len: usize, i: usize, start_base: usize, delta_base: us
     }
 
     # idRangeOffset indexes forward from its own slot into glyphIdArray.
-    val glyph_at: usize = range_at + range_off.ok::usize + (c - start_code.ok)::usize * 2;
-    val raw: res[u16, FontError] = read.read_u16(data, len, glyph_at);
+    val glyph_at: usize               = range_at + range_off.ok::usize + (c - start_code.ok)::usize * 2;
+    val raw:      res[u16, FontError] = read.read_u16(data, len, glyph_at);
     if (sel raw.err) { ret res[u16, FontError].err{raw.err}; }
     if (raw.ok == 0) { ret res[u16, FontError].ok{0}; }
     ret res[u16, FontError].ok{(raw.ok::u32 + delta)::u16};
@@ -162,10 +162,10 @@ var f4: [64]u8;
 
 fun build_f4() {
     val p: *u8 = ?f4[0];
-    w16(p, 0, 4);            # format
-    w16(p, 2, 42);           # length
-    w16(p, 4, 0);            # language
-    w16(p, 6, 6);            # segCountX2 (3 segments)
+    w16(p, 0, 4); # format
+    w16(p, 2, 42); # length
+    w16(p, 4, 0); # language
+    w16(p, 6, 6); # segCountX2 (3 segments)
     w16(p, 8, 0);
     w16(p, 10, 0);
     w16(p, 12, 0);
@@ -173,21 +173,21 @@ fun build_f4() {
     w16(p, 14, 0x43);
     w16(p, 16, 0x58);
     w16(p, 18, 0xFFFF);
-    w16(p, 20, 0);           # reservedPad
+    w16(p, 20, 0); # reservedPad
     # startCode[3]
     w16(p, 22, 0x41);
     w16(p, 24, 0x58);
     w16(p, 26, 0xFFFF);
     # idDelta[3]
-    w16(p, 28, 0xFFC2);      # -62: 'A'(0x41) -> 3
-    w16(p, 30, 0);           # seg1 maps through glyphIdArray
-    w16(p, 32, 1);           # terminator
+    w16(p, 28, 0xFFC2); # -62: 'A'(0x41) -> 3
+    w16(p, 30, 0); # seg1 maps through glyphIdArray
+    w16(p, 32, 1); # terminator
     # idRangeOffset[3]
     w16(p, 34, 0);
-    w16(p, 36, 4);           # seg1: slot@36 + 4 -> glyphIdArray@40
+    w16(p, 36, 4); # seg1: slot@36 + 4 -> glyphIdArray@40
     w16(p, 38, 0);
     # glyphIdArray
-    w16(p, 40, 9);           # 'X' -> 9
+    w16(p, 40, 9); # 'X' -> 9
 }
 
 # test whether a lookup succeeded with exactly this glyph
@@ -223,34 +223,34 @@ var cmap_buf: [128]u8;
 
 fun build_cmap() {
     val p: *u8 = ?cmap_buf[0];
-    w16(p, 0, 0);            # version
-    w16(p, 2, 1);            # numTables
-    w16(p, 4, 3);            # platformID = windows
-    w16(p, 6, 1);            # encodingID = BMP unicode
-    w32(p, 8, 12);           # subtable offset (relative to cmap start)
+    w16(p, 0, 0); # version
+    w16(p, 2, 1); # numTables
+    w16(p, 4, 3); # platformID = windows
+    w16(p, 6, 1); # encodingID = BMP unicode
+    w32(p, 8, 12); # subtable offset (relative to cmap start)
     build_f4();
     var i: usize = 0;
     for (i < 64) {
         cmap_buf[12 + i] = f4[i];
-        i = i + 1;
+        i                = i + 1;
     }
 }
 
 test "cmap: select subtable and map" {
     build_cmap();
     val sub: res[usize, FontError] = select_subtable(?cmap_buf[0], 128, 0);
-    if (!sel sub.ok) { ret 1; }
-    if (sub.ok != 12) { ret 2; }
+    if (!sel sub.ok)                                       { ret 1; }
+    if (sub.ok != 12)                                      { ret 2; }
     if (!maps(lookup(?cmap_buf[0], 128, sub.ok, 0x42), 4)) { ret 3; }
     ret 0;
 }
 
 test "cmap: no unicode subtable rejected" {
     build_cmap();
-    w16(?cmap_buf[0], 4, 1);    # platformID = macintosh, not unicode
+    w16(?cmap_buf[0], 4, 1); # platformID = macintosh, not unicode
     w16(?cmap_buf[0], 6, 0);
     val sub: res[usize, FontError] = select_subtable(?cmap_buf[0], 128, 0);
-    if (!sel sub.err) { ret 1; }
+    if (!sel sub.err)                 { ret 1; }
     if (!sel sub.err.no_unicode_cmap) { ret 2; }
     ret 0;
 }
@@ -262,7 +262,7 @@ fun lookup_12(data: *u8, len: usize, sub_off: usize, codepoint: u32) res[u16, Fo
 
     var i: usize = 0;
     for (i < num_groups.ok::usize) {
-        val g: usize = sub_off + 16 + i * 12;
+        val g:          usize               = sub_off + 16 + i * 12;
         val start_char: res[u32, FontError] = read.read_u32(data, len, g);
         if (sel start_char.err) { ret res[u16, FontError].err{start_char.err}; }
         val end_char: res[u32, FontError] = read.read_u32(data, len, g + 4);
@@ -283,11 +283,11 @@ var f12: [40]u8;
 
 fun build_f12() {
     val p: *u8 = ?f12[0];
-    w16(p, 0, 12);           # format
-    w16(p, 2, 0);            # reserved
-    w32(p, 4, 40);           # length
-    w32(p, 8, 0);            # language
-    w32(p, 12, 2);           # numGroups
+    w16(p, 0, 12); # format
+    w16(p, 2, 0); # reserved
+    w32(p, 4, 40); # length
+    w32(p, 8, 0); # language
+    w32(p, 12, 2); # numGroups
     # group 0: U+0100..U+0102 -> glyphs 10..12
     w32(p, 16, 0x100);
     w32(p, 20, 0x102);
@@ -320,7 +320,7 @@ test "cmap: unsupported subtable format rejected" {
     build_f12();
     w16(?f12[0], 0, 6);
     val r: res[u16, FontError] = lookup(?f12[0], 40, 0, 0x101);
-    if (!sel r.err) { ret 1; }
+    if (!sel r.err)             { ret 1; }
     if (!sel r.err.cmap_format) { ret 2; }
     if (r.err.cmap_format != 6) { ret 3; }
     ret 0;

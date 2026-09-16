@@ -7,8 +7,8 @@
 
 use font.error.FontError;
 use std.types.bool.bool;
-use std.types.bool.true;
 use std.types.bool.false;
+use std.types.bool.true;
 use std.types.result.res;
 use std.types.size.usize;
 
@@ -84,11 +84,11 @@ pub fun read_f2dot14(data: *u8, len: usize, off: usize) res[f32, FontError] {
 # table directory entries name a table by a four-byte tag (`glyf`, `cmap`, ...),
 # and this compares in place without materializing a string.
 # ---
-# data:       pointer to the first byte of the file
-# len:        number of bytes addressable through data
-# off:        byte offset of the candidate tag
+# data: pointer to the first byte of the file
+# len:  number of bytes addressable through data
+# off:  byte offset of the candidate tag
 # a, b, c, d: the four tag bytes to match
-# ret:        whether the bytes match, or truncated when [off, off+4) runs past len
+# ret: whether the bytes match, or truncated when [off, off+4) runs past len
 pub fun tag_eq(data: *u8, len: usize, off: usize, a: u8, b: u8, c: u8, d: u8) res[bool, FontError] {
     if (off + 4 > len) { ret res[bool, FontError].err{FontError.truncated{off}}; }
     val same: bool = data[off] == a && data[off + 1] == b && data[off + 2] == c && data[off + 3] == d;
@@ -100,14 +100,14 @@ var test_buf: [8]u8;
 test "read: u8 in range" {
     test_buf[0] = 0x2A;
     val v: res[u8, FontError] = read_u8(?test_buf[0], 8, 0);
-    if (!sel v.ok) { ret 1; }
+    if (!sel v.ok)    { ret 1; }
     if (v.ok != 0x2A) { ret 2; }
     ret 0;
 }
 
 test "read: u8 out of range" {
     val v: res[u8, FontError] = read_u8(?test_buf[0], 4, 4);
-    if (!sel v.err) { ret 1; }
+    if (!sel v.err)           { ret 1; }
     if (!sel v.err.truncated) { ret 2; }
     if (v.err.truncated != 4) { ret 3; }
     ret 0;
@@ -117,14 +117,14 @@ test "read: u16 big-endian" {
     test_buf[0] = 0x12;
     test_buf[1] = 0x34;
     val v: res[u16, FontError] = read_u16(?test_buf[0], 8, 0);
-    if (!sel v.ok) { ret 1; }
+    if (!sel v.ok)      { ret 1; }
     if (v.ok != 0x1234) { ret 2; }
     ret 0;
 }
 
 test "read: u16 truncated span" {
     val v: res[u16, FontError] = read_u16(?test_buf[0], 8, 7);
-    if (!sel v.err) { ret 1; }
+    if (!sel v.err)           { ret 1; }
     if (!sel v.err.truncated) { ret 2; }
     if (v.err.truncated != 7) { ret 3; }
     ret 0;
@@ -134,7 +134,7 @@ test "read: i16 negative" {
     test_buf[0] = 0xFF;
     test_buf[1] = 0xFE;
     val v: res[i16, FontError] = read_i16(?test_buf[0], 8, 0);
-    if (!sel v.ok) { ret 1; }
+    if (!sel v.ok)  { ret 1; }
     if (v.ok != -2) { ret 2; }
     ret 0;
 }
@@ -145,7 +145,7 @@ test "read: u32 big-endian" {
     test_buf[2] = 0xBE;
     test_buf[3] = 0xEF;
     val v: res[u32, FontError] = read_u32(?test_buf[0], 8, 0);
-    if (!sel v.ok) { ret 1; }
+    if (!sel v.ok)          { ret 1; }
     if (v.ok != 0xDEADBEEF) { ret 2; }
     ret 0;
 }
@@ -154,13 +154,13 @@ test "read: f2dot14 unit and fraction" {
     test_buf[0] = 0x40;
     test_buf[1] = 0x00;
     val unit: res[f32, FontError] = read_f2dot14(?test_buf[0], 8, 0);
-    if (!sel unit.ok) { ret 1; }
+    if (!sel unit.ok)   { ret 1; }
     if (unit.ok != 1.0) { ret 2; }
     # 0xE000 is -0.5: the F2Dot14 unit is 1/16384
     test_buf[0] = 0xE0;
     test_buf[1] = 0x00;
     val half: res[f32, FontError] = read_f2dot14(?test_buf[0], 8, 0);
-    if (!sel half.ok) { ret 3; }
+    if (!sel half.ok)    { ret 3; }
     if (half.ok != -0.5) { ret 4; }
     ret 0;
 }
@@ -172,16 +172,16 @@ test "read: tag match" {
     test_buf[3] = 'f';
     val glyf: res[bool, FontError] = tag_eq(?test_buf[0], 8, 0, 'g', 'l', 'y', 'f');
     if (!sel glyf.ok) { ret 1; }
-    if (!glyf.ok) { ret 2; }
+    if (!glyf.ok)     { ret 2; }
     val cmap: res[bool, FontError] = tag_eq(?test_buf[0], 8, 0, 'c', 'm', 'a', 'p');
     if (!sel cmap.ok) { ret 3; }
-    if (cmap.ok) { ret 4; }
+    if (cmap.ok)      { ret 4; }
     ret 0;
 }
 
 test "read: tag out of range" {
     val t: res[bool, FontError] = tag_eq(?test_buf[0], 2, 0, 'g', 'l', 'y', 'f');
-    if (!sel t.err) { ret 1; }
+    if (!sel t.err)           { ret 1; }
     if (!sel t.err.truncated) { ret 2; }
     ret 0;
 }

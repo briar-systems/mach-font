@@ -12,8 +12,8 @@
 # and carries different subtable headers, so the version check rejects it rather
 # than misreading its fields. every read is bounds-checked through font.read.
 
-use font.read;
 use font.error.FontError;
+use font.read;
 use std.types.bool.bool;
 use std.types.bool.false;
 use std.types.result.res;
@@ -28,8 +28,8 @@ val FORMAT0_HEADER: usize = 8;
 val PAIR_SIZE: usize = 6;
 
 # coverage low-byte flags
-val COVERAGE_HORIZONTAL: u16 = 0x01;
-val COVERAGE_MINIMUM: u16 = 0x02;
+val COVERAGE_HORIZONTAL:   u16 = 0x01;
+val COVERAGE_MINIMUM:      u16 = 0x02;
 val COVERAGE_CROSS_STREAM: u16 = 0x04;
 
 # the located pair array of a horizontal format-0 kerning subtable
@@ -61,7 +61,7 @@ pub fun select_subtable(data: *u8, len: usize, off: usize) res[Pairs, FontError]
     if (sel num_tables.err) { ret res[Pairs, FontError].err{num_tables.err}; }
 
     var sub: usize = off + 4;
-    var i: u16 = 0;
+    var i:   u16   = 0;
     for (i < num_tables.ok) {
         val sub_len: res[u16, FontError] = read.read_u16(data, len, sub + 2);
         if (sel sub_len.err) { ret res[Pairs, FontError].err{sub_len.err}; }
@@ -73,8 +73,8 @@ pub fun select_subtable(data: *u8, len: usize, off: usize) res[Pairs, FontError]
         }
 
         # the coverage word carries the format in its high byte and the flags in its low.
-        val format: u16 = coverage.ok >> 8;
-        val flags:  u16 = coverage.ok & 0xFF;
+        val format: u16  = coverage.ok >> 8;
+        val flags:  u16  = coverage.ok & 0xFF;
         val plain:  bool = (flags & COVERAGE_MINIMUM) == 0 && (flags & COVERAGE_CROSS_STREAM) == 0;
 
         if (format == 0 && (flags & COVERAGE_HORIZONTAL) != 0 && plain) {
@@ -84,7 +84,7 @@ pub fun select_subtable(data: *u8, len: usize, off: usize) res[Pairs, FontError]
             if (pairs + num_pairs.ok::usize * PAIR_SIZE > len) {
                 ret res[Pairs, FontError].err{FontError.truncated{pairs}};
             }
-            ret res[Pairs, FontError].ok{Pairs{ offset: pairs, count: num_pairs.ok }};
+            ret res[Pairs, FontError].ok{Pairs{offset: pairs, count: num_pairs.ok}};
         }
 
         sub = sub + sub_len.ok::usize;
@@ -116,18 +116,18 @@ fun pair_key(data: *u8, len: usize, entry: usize) res[u32, FontError] {
 # right: glyph index of the right-hand glyph
 # ret:   the adjustment in font units (0 when the pair is unkerned), or truncated
 pub fun lookup(data: *u8, len: usize, pairs: Pairs, left: u16, right: u16) res[i16, FontError] {
-    val key: u32 = (left::u32 << 16) | right::u32;
-    var lo: usize = 0;
-    var hi: usize = pairs.count::usize;
+    val key: u32   = (left::u32 << 16) | right::u32;
+    var lo:  usize = 0;
+    var hi:  usize = pairs.count::usize;
     for (lo < hi) {
-        val mid:   usize = lo + (hi - lo) / 2;
-        val entry: usize = pairs.offset + mid * PAIR_SIZE;
-        val k: res[u32, FontError] = pair_key(data, len, entry);
+        val mid:   usize               = lo + (hi - lo) / 2;
+        val entry: usize               = pairs.offset + mid * PAIR_SIZE;
+        val k:     res[u32, FontError] = pair_key(data, len, entry);
         if (sel k.err) { ret res[i16, FontError].err{k.err}; }
 
         if (k.ok < key) { lo = mid + 1; }
         or (k.ok > key) { hi = mid; }
-        or { ret read.read_i16(data, len, entry + 4); }
+        or              { ret read.read_i16(data, len, entry + 4); }
     }
     ret res[i16, FontError].ok{0};
 }
@@ -149,18 +149,18 @@ var kern_buf: [64]u8;
 
 fun build_kern() {
     val p: *u8 = ?kern_buf[0];
-    w16(p, 0, 0);        # version
-    w16(p, 2, 1);        # nTables
-    w16(p, 4, 0);        # subtable version
-    w16(p, 6, 38);       # subtable length: 6 header + 8 + 4 pairs * 6
-    w16(p, 8, 0x0001);   # coverage: format 0, horizontal
-    w16(p, 10, 4);       # nPairs
+    w16(p, 0, 0); # version
+    w16(p, 2, 1); # nTables
+    w16(p, 4, 0); # subtable version
+    w16(p, 6, 38); # subtable length: 6 header + 8 + 4 pairs * 6
+    w16(p, 8, 0x0001); # coverage: format 0, horizontal
+    w16(p, 10, 4); # nPairs
     # searchRange / entrySelector / rangeShift are written but never trusted
     w16(p, 12, 12);
     # pairs sorted by (left << 16) | right
-    pair(p, 0, 1, 2, 0xFFB0);   # -80
+    pair(p, 0, 1, 2, 0xFFB0); # -80
     pair(p, 1, 1, 9, 25);
-    pair(p, 2, 3, 4, 0xFFCE);   # -50
+    pair(p, 2, 3, 4, 0xFFCE); # -50
     pair(p, 3, 7, 1, 100);
 }
 
@@ -168,7 +168,7 @@ fun build_kern() {
 fun selected() Pairs {
     val r: res[Pairs, FontError] = select_subtable(?kern_buf[0], 64, 0);
     if (sel r.ok) { ret r.ok; }
-    ret Pairs{ offset: 0, count: 0 };
+    ret Pairs{offset: 0, count: 0};
 }
 
 # test whether a lookup succeeded with exactly this adjustment
@@ -186,9 +186,9 @@ fun none_usable() bool {
 test "kern: select horizontal format 0 subtable" {
     build_kern();
     val r: res[Pairs, FontError] = select_subtable(?kern_buf[0], 64, 0);
-    if (!sel r.ok) { ret 1; }
+    if (!sel r.ok)         { ret 1; }
     if (r.ok.offset != 18) { ret 2; }
-    if (r.ok.count != 4) { ret 3; }
+    if (r.ok.count != 4)   { ret 3; }
     ret 0;
 }
 
@@ -196,7 +196,7 @@ test "kern: lookup finds every pair" {
     build_kern();
     val p: Pairs = selected();
     if (!kerns(lookup(?kern_buf[0], 64, p, 1, 2), -80)) { ret 1; }
-    if (!kerns(lookup(?kern_buf[0], 64, p, 1, 9), 25)) { ret 2; }
+    if (!kerns(lookup(?kern_buf[0], 64, p, 1, 9), 25))  { ret 2; }
     if (!kerns(lookup(?kern_buf[0], 64, p, 3, 4), -50)) { ret 3; }
     if (!kerns(lookup(?kern_buf[0], 64, p, 7, 1), 100)) { ret 4; }
     ret 0;
@@ -217,27 +217,27 @@ test "kern: unkerned pair yields zero" {
 
 test "kern: vertical and cross-stream subtables skipped" {
     build_kern();
-    w16(?kern_buf[0], 8, 0x0000);   # format 0, vertical
+    w16(?kern_buf[0], 8, 0x0000); # format 0, vertical
     if (!none_usable()) { ret 1; }
-    w16(?kern_buf[0], 8, 0x0005);   # format 0, horizontal, cross-stream
+    w16(?kern_buf[0], 8, 0x0005); # format 0, horizontal, cross-stream
     if (!none_usable()) { ret 2; }
-    w16(?kern_buf[0], 8, 0x0003);   # format 0, horizontal, minimum values
+    w16(?kern_buf[0], 8, 0x0003); # format 0, horizontal, minimum values
     if (!none_usable()) { ret 3; }
     ret 0;
 }
 
 test "kern: unsupported format skipped" {
     build_kern();
-    w16(?kern_buf[0], 8, 0x0201);   # format 2, horizontal
+    w16(?kern_buf[0], 8, 0x0201); # format 2, horizontal
     if (!none_usable()) { ret 1; }
     ret 0;
 }
 
 test "kern: apple 32-bit version rejected" {
     build_kern();
-    w16(?kern_buf[0], 0, 1);   # 0x0001 opens apple's 0x00010000 version
+    w16(?kern_buf[0], 0, 1); # 0x0001 opens apple's 0x00010000 version
     val r: res[Pairs, FontError] = select_subtable(?kern_buf[0], 64, 0);
-    if (!sel r.err) { ret 1; }
+    if (!sel r.err)              { ret 1; }
     if (!sel r.err.kern_version) { ret 2; }
     if (r.err.kern_version != 1) { ret 3; }
     ret 0;
@@ -245,21 +245,21 @@ test "kern: apple 32-bit version rejected" {
 
 test "kern: pair array past the buffer rejected" {
     build_kern();
-    w16(?kern_buf[0], 10, 1000);   # nPairs far beyond the buffer
+    w16(?kern_buf[0], 10, 1000); # nPairs far beyond the buffer
     val r: res[Pairs, FontError] = select_subtable(?kern_buf[0], 64, 0);
-    if (!sel r.err) { ret 1; }
-    if (!sel r.err.truncated) { ret 2; }
+    if (!sel r.err)            { ret 1; }
+    if (!sel r.err.truncated)  { ret 2; }
     if (r.err.truncated != 18) { ret 3; }
     ret 0;
 }
 
 test "kern: subtable shorter than its header rejected" {
     build_kern();
-    w16(?kern_buf[0], 2, 2);        # nTables = 2
-    w16(?kern_buf[0], 8, 0x0000);   # first subtable is vertical, so the walk steps past it
-    w16(?kern_buf[0], 6, 4);        # ... by a length that cannot hold its header
+    w16(?kern_buf[0], 2, 2); # nTables = 2
+    w16(?kern_buf[0], 8, 0x0000); # first subtable is vertical, so the walk steps past it
+    w16(?kern_buf[0], 6, 4); # ... by a length that cannot hold its header
     val r: res[Pairs, FontError] = select_subtable(?kern_buf[0], 64, 0);
-    if (!sel r.err) { ret 1; }
+    if (!sel r.err)                      { ret 1; }
     if (!sel r.err.kern_subtable_length) { ret 2; }
     if (r.err.kern_subtable_length != 4) { ret 3; }
     ret 0;
@@ -267,19 +267,19 @@ test "kern: subtable shorter than its header rejected" {
 
 test "kern: second subtable reached past the first" {
     build_kern();
-    w16(?kern_buf[0], 2, 2);        # nTables = 2
-    w16(?kern_buf[0], 8, 0x0000);   # first subtable is vertical
-    w16(?kern_buf[0], 6, 14);       # ... and holds no pairs
+    w16(?kern_buf[0], 2, 2); # nTables = 2
+    w16(?kern_buf[0], 8, 0x0000); # first subtable is vertical
+    w16(?kern_buf[0], 6, 14); # ... and holds no pairs
     # a second horizontal format-0 subtable follows it at offset 18
-    w16(?kern_buf[0], 18, 0);       # version
-    w16(?kern_buf[0], 20, 20);      # length: 6 + 8 + 1 pair * 6
-    w16(?kern_buf[0], 22, 0x0001);  # coverage
-    w16(?kern_buf[0], 24, 1);       # nPairs
-    w16(?kern_buf[0], 32, 5);       # left
-    w16(?kern_buf[0], 34, 6);       # right
-    w16(?kern_buf[0], 36, 0xFFEC);  # -20
+    w16(?kern_buf[0], 18, 0); # version
+    w16(?kern_buf[0], 20, 20); # length: 6 + 8 + 1 pair * 6
+    w16(?kern_buf[0], 22, 0x0001); # coverage
+    w16(?kern_buf[0], 24, 1); # nPairs
+    w16(?kern_buf[0], 32, 5); # left
+    w16(?kern_buf[0], 34, 6); # right
+    w16(?kern_buf[0], 36, 0xFFEC); # -20
     val p: Pairs = selected();
-    if (p.offset != 32 || p.count != 1) { ret 1; }
+    if (p.offset != 32 || p.count != 1)                 { ret 1; }
     if (!kerns(lookup(?kern_buf[0], 64, p, 5, 6), -20)) { ret 2; }
     ret 0;
 }
