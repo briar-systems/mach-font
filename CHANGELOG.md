@@ -52,6 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     zero units-per-em.
 
 ### Added
+- manifest: `linux-arm64` and `darwin-aarch64` targets, so the native aarch64 hosts build and test for themselves instead of falling back to linux-x86_64.
 - info: `glyph_info(f, glyph)` reads a glyph's header, none for an empty glyph,
   so a consumer no longer resolves loca and glyf itself.
 
