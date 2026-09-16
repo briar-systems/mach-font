@@ -2,29 +2,33 @@
 
 Pure-[Mach](https://github.com/briar-systems/mach) TrueType parsing and glyph
 rasterization: read a `.ttf`, walk its tables, and rasterize glyphs into
-coverage bitmaps a renderer can pack into an atlas. No C, no FreeType — just
+coverage bitmaps a renderer can pack into an atlas. No C, no FreeType, just
 Mach algorithms over the font's bytes. Project id is `font`, so consumers reach
 everything as `font.*`.
 
 ```mach
 use font;
+use std.types.result.res;
+use std.types.size.usize;
 
-fun example(data: *u8, len: u64) {
-    # every scalar in a truetype file is big-endian and bounds-checked on read
-    var units_per_em: u16 = 0;
-    if (font.read_u16(data, len, 18, ?units_per_em)) {
-        # ... parse the table directory, load a glyph, rasterize
+fun example(data: *u8, len: usize) u16 {
+    val face: res[font.Font, font.FontError] = font.init(data, len);
+    if (sel face.err) {
+        # face.err names the fault: truncated, not_truetype, missing_table, ...
+        ret 0;
     }
+    var f: font.Font = face.ok;
+    val glyph: res[u16, font.FontError] = font.glyph_index(?f, 'A');
+    if (sel glyph.ok) { ret glyph.ok; }
+    ret 0;
 }
 ```
 
 Consuming projects vendor the library as a normal Mach dependency. There is no
 system link requirement: `mach-font` is pure algorithms and declares no `libs`.
 
-```toml
-[deps.mach-font]
-git = "https://github.com/briar-systems/mach-font"
-ref = "branch/main"
+```sh
+mach dep add . font --git https://github.com/briar-systems/mach-font --ref branch/main
 ```
 
 ## Scope
@@ -43,8 +47,8 @@ ref = "branch/main"
 
 - **TrueType hinting.** The bytecode interpreter and grid-fitting are out of
   scope; rasterization is unhinted. Unhinted anti-aliased rendering is the modern
-  norm — every current desktop and mobile stack ignores the hints at the sizes
-  that matter — so the interpreter would buy nothing here.
+  norm (every current desktop and mobile stack ignores the hints at the sizes
+  that matter), so the interpreter would buy nothing here.
 - **`GSUB`/`GPOS` shaping.** Ligature and contextual substitution, mark
   attachment, and OpenType positioning are HarfBuzz territory, as are bidi and
   cursive joining. Single-run left-to-right layout with `kern` pair spacing is
@@ -56,8 +60,8 @@ ref = "branch/main"
 
 ## Platforms
 
-`mach-font` has no OS dependencies — it operates entirely on in-memory bytes —
-so it builds for every prime target the Mach compiler ships:
+`mach-font` has no OS dependencies, since it operates entirely on in-memory
+bytes, so it builds for every prime target the Mach compiler ships:
 `x86_64`/`aarch64` on Linux and macOS, and `x86_64` on Windows. Endianness is
 handled explicitly (TrueType is big-endian regardless of host), so nothing here
 is host-specific.
@@ -67,7 +71,8 @@ is host-specific.
 ```
 src/
   font.mach     library surface: re-exports the public api behind `use font;`
-  read.mach     bounds-checked big-endian reads — the shared foundation
+  error.mach    FontError, one case per way an operation can fail
+  read.mach     bounds-checked big-endian reads, the shared foundation
   table.mach    sfnt offset table + table directory lookup by tag
   head.mach     font header: unitsPerEm, loca format, bounding box
   maxp.mach     glyph count and outline storage maxima
@@ -82,10 +87,16 @@ src/
 ```
 
 The reader is the foundation: font files are untrusted input, so every read
-validates its span against the buffer before touching it and reports failure
-rather than reading out of bounds. The table parsers and rasterizer are built on
-top of it and follow the same discipline — a truncated or malformed font is
-rejected cleanly.
+validates its span against the buffer before touching it and reports
+`FontError.truncated` rather than reading out of bounds. The table parsers and
+rasterizer are built on top of it and follow the same discipline, so a truncated
+or malformed font is rejected cleanly.
+
+Every fallible call returns `res[T, FontError]`, `err[FontError]` or, where a
+font may simply lack something, an `opt` inside the `res`. `FontError` has one
+case per failure, carrying the offset, version, glyph index or table that
+identifies it, so a caller can tell a broken file from an unsupported feature
+from a buffer it sized too small.
 
 ## Status
 
@@ -95,12 +106,13 @@ outline extraction (`loca` + `glyf`) for both simple and composite glyphs.
 Rasterization flattens quadratic outlines and scan-fills an anti-aliased 8-bit
 coverage bitmap with the nonzero winding rule. The `Font` handle (`font.init`)
 locates the tables once and exposes `glyph_index`, `glyph_hmetrics`,
-`glyph_kern_advance`, `glyph_outline`, `outline_maxima`, and `render_glyph`. All
+`glyph_kern_advance`, `glyph_outline`, `glyph_info`, `outline_maxima`, and
+`render_glyph`. All
 rasterization buffers are caller-provided, so the library allocates nothing.
 
 A composite glyph resolves recursively into one flat outline, so `render_glyph`
 rasterizes an accented letter exactly as it does a simple one. Size the point and
-contour buffers from `outline_maxima` — a composite's resolved point count
+contour buffers from `outline_maxima`, since a composite's resolved point count
 exceeds anything `point_count` reports for a simple glyph.
 
 Known limitations of this pass:
@@ -110,7 +122,7 @@ Known limitations of this pass:
   is refused instead of being silently misplaced. It is vanishingly rare in
   shipping fonts.
 - **The fill is unoptimized.** Coverage is sampled on a supersampling subgrid
-  per pixel; correct and simple, but a sorted active-edge sweep would be faster
+  per pixel. That is correct and simple, but a sorted active-edge sweep would be faster
   for large glyphs.
 
 ## Tests

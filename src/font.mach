@@ -6,6 +6,7 @@
 # scope grows from here: the big-endian reader is the shared foundation the table
 # parsers (glyf, cmap, hmtx, ...) and the rasterizer are built on.
 
+use font.error;
 use font.read;
 use font.table;
 use font.head;
@@ -21,6 +22,9 @@ use font.info;
 # links the startup entrypoint so `mach test` over this library produces a binary.
 use std.runtime;
 
+fwd error.FontError;
+fwd error.TableId;
+
 fwd read.read_u8;
 fwd read.read_u16;
 fwd read.read_i16;
@@ -29,7 +33,7 @@ fwd read.read_f2dot14;
 fwd read.tag_eq;
 
 fwd table.Table;
-fwd table.is_truetype;
+fwd table.check_truetype;
 fwd table.num_tables;
 fwd table.find_table;
 
@@ -40,11 +44,14 @@ fwd maxp.Maxima;
 fwd maxp.storage_maxima;
 fwd hhea.Hhea;
 fwd hhea.parse_hhea;
+fwd hmtx.HMetrics;
 fwd hmtx.metrics;
 
 fwd cmap.select_subtable;
 fwd cmap.lookup;
 
+fwd loca.GlyphRange;
+fwd loca.is_empty;
 fwd loca.glyph_range;
 
 fwd glyf.Point;
@@ -63,6 +70,7 @@ fwd glyf.xform_apply;
 
 # kern's subtable selection and pair lookup carry the table name into the flat
 # surface, where cmap already holds the unqualified spellings.
+fwd KernPairs: kern.Pairs;
 fwd kern_select_subtable: kern.select_subtable;
 fwd kern_lookup: kern.lookup;
 
@@ -76,6 +84,7 @@ fwd info.glyph_hmetrics;
 fwd info.glyph_kern_advance;
 fwd info.glyph_index;
 fwd info.glyph_outline;
+fwd info.glyph_info;
 fwd info.outline_maxima;
 fwd info.scale_for_pixel_height;
 fwd info.scale_for_em_size;

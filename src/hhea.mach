@@ -6,9 +6,8 @@
 # through font.read.
 
 use font.read;
-use std.types.bool.bool;
-use std.types.bool.true;
-use std.types.bool.false;
+use font.error.FontError;
+use std.types.result.res;
 use std.types.size.usize;
 
 # the horizontal header fields a layout engine and hmtx need
@@ -31,17 +30,26 @@ pub rec Hhea {
 # data: pointer to the first byte of the file
 # len:  number of bytes addressable through data
 # off:  byte offset of the hhea table
-# out:  receives the parsed header on success
-# ret:  true when every field lies within len, false otherwise
-pub fun parse_hhea(data: *u8, len: usize, off: usize, out: *Hhea) bool {
-    var h: Hhea;
-    if (!read.read_i16(data, len, off + 4, ?h.ascent)) { ret false; }
-    if (!read.read_i16(data, len, off + 6, ?h.descent)) { ret false; }
-    if (!read.read_i16(data, len, off + 8, ?h.line_gap)) { ret false; }
-    if (!read.read_u16(data, len, off + 10, ?h.advance_width_max)) { ret false; }
-    if (!read.read_u16(data, len, off + 34, ?h.num_h_metrics)) { ret false; }
-    out[0] = h;
-    ret true;
+# ret:  the parsed header, or truncated
+pub fun parse_hhea(data: *u8, len: usize, off: usize) res[Hhea, FontError] {
+    val ascent: res[i16, FontError] = read.read_i16(data, len, off + 4);
+    if (sel ascent.err) { ret res[Hhea, FontError].err{ascent.err}; }
+    val descent: res[i16, FontError] = read.read_i16(data, len, off + 6);
+    if (sel descent.err) { ret res[Hhea, FontError].err{descent.err}; }
+    val line_gap: res[i16, FontError] = read.read_i16(data, len, off + 8);
+    if (sel line_gap.err) { ret res[Hhea, FontError].err{line_gap.err}; }
+    val widest: res[u16, FontError] = read.read_u16(data, len, off + 10);
+    if (sel widest.err) { ret res[Hhea, FontError].err{widest.err}; }
+    val metrics: res[u16, FontError] = read.read_u16(data, len, off + 34);
+    if (sel metrics.err) { ret res[Hhea, FontError].err{metrics.err}; }
+
+    ret res[Hhea, FontError].ok{Hhea{
+        ascent:            ascent.ok,
+        descent:           descent.ok,
+        line_gap:          line_gap.ok,
+        advance_width_max: widest.ok,
+        num_h_metrics:     metrics.ok,
+    }};
 }
 
 fun w16(buf: *u8, off: usize, v: u16) {
@@ -57,18 +65,20 @@ test "hhea: parse fields" {
     w16(?hhea_buf[0], 8, 90);         # line_gap
     w16(?hhea_buf[0], 10, 2100);      # advance_width_max
     w16(?hhea_buf[0], 34, 42);        # num_h_metrics
-    var h: Hhea;
-    if (!parse_hhea(?hhea_buf[0], 36, 0, ?h)) { ret 1; }
-    if (h.ascent != 1800) { ret 1; }
-    if (h.descent != -500) { ret 1; }
-    if (h.line_gap != 90) { ret 1; }
-    if (h.advance_width_max != 2100) { ret 1; }
-    if (h.num_h_metrics != 42) { ret 1; }
+    val r: res[Hhea, FontError] = parse_hhea(?hhea_buf[0], 36, 0);
+    if (!sel r.ok) { ret 1; }
+    if (r.ok.ascent != 1800) { ret 2; }
+    if (r.ok.descent != -500) { ret 3; }
+    if (r.ok.line_gap != 90) { ret 4; }
+    if (r.ok.advance_width_max != 2100) { ret 5; }
+    if (r.ok.num_h_metrics != 42) { ret 6; }
     ret 0;
 }
 
 test "hhea: truncated rejected" {
-    var h: Hhea;
-    if (parse_hhea(?hhea_buf[0], 34, 0, ?h)) { ret 1; }
+    val r: res[Hhea, FontError] = parse_hhea(?hhea_buf[0], 34, 0);
+    if (!sel r.err) { ret 1; }
+    if (!sel r.err.truncated) { ret 2; }
+    if (r.err.truncated != 34) { ret 3; }
     ret 0;
 }

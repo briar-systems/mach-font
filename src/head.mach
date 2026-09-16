@@ -6,9 +6,8 @@
 # mislocated or corrupt table. all reads are bounds-checked through font.read.
 
 use font.read;
-use std.types.bool.bool;
-use std.types.bool.true;
-use std.types.bool.false;
+use font.error.FontError;
+use std.types.result.res;
 use std.types.size.usize;
 
 # magic number stored at head+12 in every valid font header
@@ -16,7 +15,7 @@ val MAGIC: u32 = 0x5F0F3CF5;
 
 # the fields of the font header a rasterizer needs
 # ---
-# units_per_em:        design units per em; the scale denominator for pixel sizing
+# units_per_em:        design units per em, the scale denominator for pixel sizing
 # index_to_loc_format: 0 selects short `loca` offsets, 1 selects long
 # x_min, y_min:        lower-left corner of the union of all glyph bounding boxes
 # x_max, y_max:        upper-right corner of that union
@@ -33,30 +32,44 @@ pub rec Head {
 
 # parse the head table at off
 #
-# validates the magic number before reading the remaining fields; a mismatch or
-# any out-of-range read reports failure.
+# validates the magic number before reading the remaining fields, and refuses a
+# zero units-per-em since every em scale divides by it.
 # ---
 # data: pointer to the first byte of the file
 # len:  number of bytes addressable through data
 # off:  byte offset of the head table
-# out:  receives the parsed header on success
-# ret:  true when the magic matches and every field lies within len
-pub fun parse_head(data: *u8, len: usize, off: usize, out: *Head) bool {
-    var magic: u32 = 0;
-    if (!read.read_u32(data, len, off + 12, ?magic)) { ret false; }
-    if (magic != MAGIC) { ret false; }
+# ret:  the parsed header, or bad_magic, zero_units_per_em or truncated
+pub fun parse_head(data: *u8, len: usize, off: usize) res[Head, FontError] {
+    val magic: res[u32, FontError] = read.read_u32(data, len, off + 12);
+    if (sel magic.err) { ret res[Head, FontError].err{magic.err}; }
+    if (magic.ok != MAGIC) { ret res[Head, FontError].err{FontError.bad_magic{magic.ok}}; }
 
-    var h: Head;
-    if (!read.read_u16(data, len, off + 18, ?h.units_per_em)) { ret false; }
-    if (!read.read_i16(data, len, off + 36, ?h.x_min)) { ret false; }
-    if (!read.read_i16(data, len, off + 38, ?h.y_min)) { ret false; }
-    if (!read.read_i16(data, len, off + 40, ?h.x_max)) { ret false; }
-    if (!read.read_i16(data, len, off + 42, ?h.y_max)) { ret false; }
-    if (!read.read_u16(data, len, off + 44, ?h.mac_style)) { ret false; }
-    if (!read.read_i16(data, len, off + 50, ?h.index_to_loc_format)) { ret false; }
+    val upem: res[u16, FontError] = read.read_u16(data, len, off + 18);
+    if (sel upem.err) { ret res[Head, FontError].err{upem.err}; }
+    val x_min: res[i16, FontError] = read.read_i16(data, len, off + 36);
+    if (sel x_min.err) { ret res[Head, FontError].err{x_min.err}; }
+    val y_min: res[i16, FontError] = read.read_i16(data, len, off + 38);
+    if (sel y_min.err) { ret res[Head, FontError].err{y_min.err}; }
+    val x_max: res[i16, FontError] = read.read_i16(data, len, off + 40);
+    if (sel x_max.err) { ret res[Head, FontError].err{x_max.err}; }
+    val y_max: res[i16, FontError] = read.read_i16(data, len, off + 42);
+    if (sel y_max.err) { ret res[Head, FontError].err{y_max.err}; }
+    val style: res[u16, FontError] = read.read_u16(data, len, off + 44);
+    if (sel style.err) { ret res[Head, FontError].err{style.err}; }
+    val loc: res[i16, FontError] = read.read_i16(data, len, off + 50);
+    if (sel loc.err) { ret res[Head, FontError].err{loc.err}; }
 
-    out[0] = h;
-    ret true;
+    if (upem.ok == 0) { ret res[Head, FontError].err{FontError.zero_units_per_em{}}; }
+
+    ret res[Head, FontError].ok{Head{
+        units_per_em:        upem.ok,
+        index_to_loc_format: loc.ok,
+        x_min:               x_min.ok,
+        y_min:               y_min.ok,
+        x_max:               x_max.ok,
+        y_max:               y_max.ok,
+        mac_style:           style.ok,
+    }};
 }
 
 fun w16(buf: *u8, off: usize, v: u16) {
@@ -83,29 +96,40 @@ fun build_head() {
 
 test "head: parse fields" {
     build_head();
-    var h: Head;
-    if (!parse_head(?head_buf[0], 54, 0, ?h)) { ret 1; }
-    if (h.units_per_em != 2048) { ret 1; }
-    if (h.index_to_loc_format != 1) { ret 1; }
-    if (h.x_min != -16) { ret 1; }
-    if (h.y_min != -100) { ret 1; }
-    if (h.x_max != 500) { ret 1; }
-    if (h.y_max != 700) { ret 1; }
-    if (h.mac_style != 1) { ret 1; }
+    val r: res[Head, FontError] = parse_head(?head_buf[0], 54, 0);
+    if (!sel r.ok) { ret 1; }
+    if (r.ok.units_per_em != 2048) { ret 2; }
+    if (r.ok.index_to_loc_format != 1) { ret 3; }
+    if (r.ok.x_min != -16 || r.ok.y_min != -100) { ret 4; }
+    if (r.ok.x_max != 500 || r.ok.y_max != 700) { ret 5; }
+    if (r.ok.mac_style != 1) { ret 6; }
     ret 0;
 }
 
 test "head: bad magic rejected" {
     build_head();
     head_buf[12] = 0;
-    var h: Head;
-    if (parse_head(?head_buf[0], 54, 0, ?h)) { ret 1; }
+    val r: res[Head, FontError] = parse_head(?head_buf[0], 54, 0);
+    if (!sel r.err) { ret 1; }
+    if (!sel r.err.bad_magic) { ret 2; }
+    if (r.err.bad_magic != 0x000F3CF5) { ret 3; }
     ret 0;
 }
 
 test "head: truncated rejected" {
     build_head();
-    var h: Head;
-    if (parse_head(?head_buf[0], 40, 0, ?h)) { ret 1; }
+    val r: res[Head, FontError] = parse_head(?head_buf[0], 40, 0);
+    if (!sel r.err) { ret 1; }
+    if (!sel r.err.truncated) { ret 2; }
+    if (r.err.truncated != 40) { ret 3; }
+    ret 0;
+}
+
+test "head: zero units per em rejected" {
+    build_head();
+    w16(?head_buf[0], 18, 0);
+    val r: res[Head, FontError] = parse_head(?head_buf[0], 54, 0);
+    if (!sel r.err) { ret 1; }
+    if (!sel r.err.zero_units_per_em) { ret 2; }
     ret 0;
 }

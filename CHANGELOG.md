@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- build: Moved to Mach 5.0 and std 2.1. The manifest states every profile in
+  full and marks its defaults, std is pinned as the `dep/std` gitlink at
+  `tag/v2.1.0` under the `std` project id, and `mach.lock` is gone.
+- api: Every fallible operation reports a `FontError` (new in `font.error`,
+  re-exported as `font.FontError`) with one case per failure, in place of a
+  `bool` success flag and out parameters. Results come back as
+  `res[T, FontError]`, `err[FontError]`, or an `opt` inside the `res` where a
+  font may simply lack something:
+  - `read_u8`/`read_u16`/`read_i16`/`read_u32`/`read_f2dot14` return
+    `res[T, FontError]`, `tag_eq` returns `res[bool, FontError]`.
+  - `table.is_truetype` is replaced by `check_truetype(data, len) err[FontError]`,
+    which reports the sfnt version it refused. `num_tables` returns a `res`, and
+    `find_table` returns `res[opt[Table], FontError]`, none when the directory
+    lacks the tag.
+  - `parse_head`, `parse_hhea`, `num_glyphs` return a `res`. `parse_head` refuses
+    a zero units-per-em. `storage_maxima` returns `res[opt[Maxima], FontError]`,
+    none for a version 0.5 maxp.
+  - `hmtx.metrics` returns `res[HMetrics, FontError]` (`advance`, `lsb`).
+  - `loca.glyph_range` returns `res[GlyphRange, FontError]` (`start`, `end`), and
+    `loca.is_empty` tests a range.
+  - `glyf.glyph_header`, `point_count`, `extract_simple` return a `res`.
+    `read_component` returns `res[Component, FontError]`, with the offset of the
+    next record in the new `Component.next` field. `point_count` of an empty
+    glyph is 0.
+  - `cmap.select_subtable` and `cmap.lookup` return a `res`.
+  - `kern.select_subtable` returns `res[Pairs, FontError]` (re-exported as
+    `KernPairs`), and `kern.lookup` takes that `Pairs` in place of an offset and
+    count.
+  - `raster.flatten` returns `res[usize, FontError]`, the edge count.
+  - `info.init` returns `res[Font, FontError]`. `Font` holds the parsed `head`,
+    `hhea` as `opt[Hhea]`, the `hmtx`, `loca` and `glyf` offsets as `opt[usize]`,
+    and the cmap and kern subtable selections as `res` values that keep the reason
+    a font has no usable mapping or kerning. The flat `units_per_em`,
+    `index_to_loc_format`, `ascent`, `descent`, `num_h_metrics`, `head_off`,
+    `hhea_off`, `cmap_off`, `cmap_sub`, `kern_off`, `kern_pairs` and
+    `kern_num_pairs` fields are gone.
+  - `glyph_hmetrics`, `glyph_kern_advance`, `glyph_index`, `glyph_outline`,
+    `outline_maxima` return a `res`, and `render_glyph` returns `err[FontError]`.
+  - `scale_for_pixel_height` returns `res[f32, FontError]` in place of a 0.0
+    sentinel. `scale_for_em_size` still returns `f32`, since `init` refuses a
+    zero units-per-em.
+
+### Added
+- info: `glyph_info(f, glyph)` reads a glyph's header, none for an empty glyph,
+  so a consumer no longer resolves loca and glyf itself.
+
 ## [0.3.0] - 2026-08-09
 
 ### Added
