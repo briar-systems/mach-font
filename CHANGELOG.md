@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-16
+
 ### Changed
 - deps: std moves to `tag/v4.0.0`, which needs mach 5.2.0 or later. mach-font uses none of the std APIs that 4.0.0 removed or reshaped, so no source changes.
 
