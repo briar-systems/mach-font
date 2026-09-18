@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-18
+
+### Changed
+- api: A glyph's bounding box comes from its resolved outline, through the new
+  `glyf.outline_bounds` (re-exported as `font.outline_bounds`), never from the
+  `glyf` header. `glyph_info` now takes the same scratch buffers as
+  `glyph_outline` and returns `res[opt[glyf.Bounds], FontError]`, none for a
+  glyph that resolves to no points. `render_glyph` places against that same box.
+  `glyf.GlyphInfo` is renamed `glyf.GlyphHeader`, since `glyph_header` is the
+  only thing that still returns it. Consumers: for a font whose stored boxes are
+  correct (DejaVu, and every font in a 913-file scan) the measured box is
+  identical to the header's, so nothing moves for shipped fonts. For a font whose
+  composite box is stale or zero, placement changes from wrong to right (#9).
+- ci: The tag-triggered workflow is `cd.yml`, and it serialises runs per tag so a doubled tag push cannot publish twice.
+- build: The manifest declares the compiler range `mach = "^5.3"`, so mach 5.3 and later no longer warn about a missing range.
+- license: Copyright is attributed to Briar Systems LLC.
+- ci: Releases publish through the family release workflow (`briar-systems/.github` `mach-release.yml`). Pushing a `v*` tag verifies the tag against the manifest version and changelog, runs every CI leg, and publishes the GitHub release with the changelog section as notes.
+
 ## [0.4.1] - 2026-09-16
 
 ### Changed

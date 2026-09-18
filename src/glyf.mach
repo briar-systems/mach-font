@@ -19,6 +19,7 @@ use font.read;
 use std.types.bool.bool;
 use std.types.bool.false;
 use std.types.bool.true;
+use std.types.option.opt;
 use std.types.result.res;
 use std.types.size.usize;
 
@@ -62,12 +63,15 @@ pub rec Point {
     on_curve: bool;
 }
 
-# a glyph's header
+# a glyph's header, as stored in the glyf table
+#
+# the bounding box here is whatever the font file claims. placement and sizing
+# never read it: outline_bounds over the resolved outline is the one source.
 # ---
 # num_contours: contour count; negative marks a composite glyph
-# x_min, y_min: lower-left corner of the glyph bounding box
-# x_max, y_max: upper-right corner of the glyph bounding box
-pub rec GlyphInfo {
+# x_min, y_min: lower-left corner of the stored bounding box
+# x_max, y_max: upper-right corner of the stored bounding box
+pub rec GlyphHeader {
     num_contours: i16;
     x_min:        i16;
     y_min:        i16;
@@ -82,6 +86,42 @@ pub rec GlyphInfo {
 pub rec Outline {
     num_contours: u16;
     num_points:   u16;
+}
+
+# the extent of a resolved outline in font design units
+# ---
+# x_min, y_min: lower-left corner
+# x_max, y_max: upper-right corner
+pub rec Bounds {
+    x_min: i16;
+    y_min: i16;
+    x_max: i16;
+    y_max: i16;
+}
+
+# compute the bounding box of a resolved outline
+#
+# the one source of a glyph's extent, for simple and composite glyphs alike. it
+# spans every point, on-curve and control alike, which is how the format defines
+# a glyph's box, so a font whose stored boxes are correct gets the same numbers
+# back. a font whose stored box is stale or zero gets the box its outline actually
+# occupies. an outline with no points has no extent.
+# ---
+# pts:        the resolved points, as glyph_outline writes them
+# num_points: how many of them there are
+# ret:        the box, or none for an empty outline
+pub fun outline_bounds(pts: *Point, num_points: u16) opt[Bounds] {
+    if (num_points == 0) { ret opt[Bounds].none{}; }
+    var b: Bounds = Bounds{x_min: pts[0].x, y_min: pts[0].y, x_max: pts[0].x, y_max: pts[0].y};
+    var i: usize  = 1;
+    for (i < num_points::usize) {
+        if (pts[i].x < b.x_min) { b.x_min = pts[i].x; }
+        if (pts[i].y < b.y_min) { b.y_min = pts[i].y; }
+        if (pts[i].x > b.x_max) { b.x_max = pts[i].x; }
+        if (pts[i].y > b.y_max) { b.y_max = pts[i].y; }
+        i = i + 1;
+    }
+    ret opt[Bounds].some{b};
 }
 
 # an affine placement of one outline into another's design space
@@ -179,18 +219,18 @@ pub fun xform_apply(m: *Xform, pts: *Point, n: usize) {
 # len:  number of bytes addressable through data
 # goff: absolute byte offset of the glyph's data
 # ret:  the header, or truncated
-pub fun glyph_header(data: *u8, len: usize, goff: usize) res[GlyphInfo, FontError] {
+pub fun glyph_header(data: *u8, len: usize, goff: usize) res[GlyphHeader, FontError] {
     val contours: res[i16, FontError] = read.read_i16(data, len, goff);
-    if (sel contours.err) { ret res[GlyphInfo, FontError].err{contours.err}; }
+    if (sel contours.err) { ret res[GlyphHeader, FontError].err{contours.err}; }
     val x_min: res[i16, FontError] = read.read_i16(data, len, goff + 2);
-    if (sel x_min.err) { ret res[GlyphInfo, FontError].err{x_min.err}; }
+    if (sel x_min.err) { ret res[GlyphHeader, FontError].err{x_min.err}; }
     val y_min: res[i16, FontError] = read.read_i16(data, len, goff + 4);
-    if (sel y_min.err) { ret res[GlyphInfo, FontError].err{y_min.err}; }
+    if (sel y_min.err) { ret res[GlyphHeader, FontError].err{y_min.err}; }
     val x_max: res[i16, FontError] = read.read_i16(data, len, goff + 6);
-    if (sel x_max.err) { ret res[GlyphInfo, FontError].err{x_max.err}; }
+    if (sel x_max.err) { ret res[GlyphHeader, FontError].err{x_max.err}; }
     val y_max: res[i16, FontError] = read.read_i16(data, len, goff + 8);
-    if (sel y_max.err) { ret res[GlyphInfo, FontError].err{y_max.err}; }
-    ret res[GlyphInfo, FontError].ok{GlyphInfo{
+    if (sel y_max.err) { ret res[GlyphHeader, FontError].err{y_max.err}; }
+    ret res[GlyphHeader, FontError].ok{GlyphHeader{
         num_contours: contours.ok,
         x_min:        x_min.ok,
         y_min:        y_min.ok,
@@ -203,7 +243,7 @@ pub fun glyph_header(data: *u8, len: usize, goff: usize) res[GlyphInfo, FontErro
 # ---
 # info: a glyph header
 # ret:  true when the glyph references component glyphs rather than storing contours
-pub fun is_composite(info: *GlyphInfo) bool {
+pub fun is_composite(info: *GlyphHeader) bool {
     ret info.num_contours < 0;
 }
 
@@ -494,7 +534,7 @@ var tri_ends: [4]u16;
 
 test "glyf: header and composite detection" {
     build_triangle();
-    val info: res[GlyphInfo, FontError] = glyph_header(?glyph_buf[0], 64, 0);
+    val info: res[GlyphHeader, FontError] = glyph_header(?glyph_buf[0], 64, 0);
     if (!sel info.ok)                                 { ret 1; }
     if (info.ok.num_contours != 1)                    { ret 2; }
     if (info.ok.x_max != 300 || info.ok.y_max != 400) { ret 3; }
@@ -596,8 +636,8 @@ test "glyf: real font simple glyph bytes" {
 }
 
 test "glyf: real font composite component records" {
-    val p:    *u8                       = ?real_composite[0];
-    val info: res[GlyphInfo, FontError] = glyph_header(p, 24, 0);
+    val p:    *u8                         = ?real_composite[0];
+    val info: res[GlyphHeader, FontError] = glyph_header(p, 24, 0);
     if (!sel info.ok)                                  { ret 1; }
     if (!is_composite(?info.ok))                       { ret 1; }
     if (info.ok.x_min != 201 || info.ok.y_min != -375) { ret 1; }
@@ -787,5 +827,32 @@ test "glyf: transformed points saturate at the coordinate range" {
     val m: Xform = Xform{a: 2.0, b: 0.0, c: 0.0, d: 2.0, dx: 0.0, dy: 0.0};
     xform_apply(?m, ?xf_pts[0], 1);
     if (xf_pts[0].x != 32767 || xf_pts[0].y != -32768) { ret 1; }
+    ret 0;
+}
+
+var bd_pts: [5]Point;
+
+test "glyf: outline bounds span every point, control points included" {
+    bd_pts[0] = Point{x: 100, y: 100, on_curve: true};
+    bd_pts[1] = Point{x: 300, y: 100, on_curve: true};
+    bd_pts[2] = Point{x: 200, y: 400, on_curve: true};
+    # a control point outside the on-curve hull still bounds the glyph
+    bd_pts[3] = Point{x: -50, y: 250, on_curve: false};
+    bd_pts[4] = Point{x: 120, y: -20, on_curve: true};
+    val b: opt[Bounds] = outline_bounds(?bd_pts[0], 5);
+    if (!sel b.some)                                { ret 1; }
+    if (b.some.x_min != -50 || b.some.y_min != -20) { ret 2; }
+    if (b.some.x_max != 300 || b.some.y_max != 400) { ret 3; }
+    # a single point is its own box
+    val one: opt[Bounds] = outline_bounds(?bd_pts[2], 1);
+    if (!sel one.some)                                  { ret 4; }
+    if (one.some.x_min != 200 || one.some.x_max != 200) { ret 5; }
+    if (one.some.y_min != 400 || one.some.y_max != 400) { ret 6; }
+    ret 0;
+}
+
+test "glyf: an empty outline has no bounds" {
+    val b: opt[Bounds] = outline_bounds(?bd_pts[0], 0);
+    if (!sel b.none) { ret 1; }
     ret 0;
 }
