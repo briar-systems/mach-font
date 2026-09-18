@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- ci: The tag-triggered workflow is `cd.yml`, and it serialises runs per tag so a doubled tag push cannot publish twice.
 - build: The manifest declares the compiler range `mach = "^5.3"`, so mach 5.3 and later no longer warn about a missing range.
 - license: Copyright is attributed to Briar Systems LLC.
 - ci: Releases publish through the family release workflow (`briar-systems/.github` `mach-release.yml`). Pushing a `v*` tag verifies the tag against the manifest version and changelog, runs every CI leg, and publishes the GitHub release with the changelog section as notes.
