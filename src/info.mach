@@ -217,8 +217,8 @@ fun compose(f: *Font, at: Outlines, glyph: u16, m: *glyf.Xform, depth: usize, pt
     # an empty glyph contributes nothing, whether it is the whole request or a component.
     if (loca.is_empty(?range.ok)) { ret err[FontError].ok{}; }
 
-    val goff: usize                          = at.glyf + range.ok.start::usize;
-    val info: res[glyf.GlyphInfo, FontError] = glyf.glyph_header(f.data, f.len, goff);
+    val goff: usize                            = at.glyf + range.ok.start::usize;
+    val info: res[glyf.GlyphHeader, FontError] = glyf.glyph_header(f.data, f.len, goff);
     if (sel info.err) { ret err[FontError].err{info.err}; }
 
     if (!glyf.is_composite(?info.ok)) {
@@ -294,26 +294,27 @@ pub fun glyph_outline(f: *Font, glyph: u16, pts: *glyf.Point, pts_cap: usize, en
     ret res[glyf.Outline, FontError].ok{o};
 }
 
-# read a glyph's header, its contour count and bounding box
+# measure a glyph's bounding box from its resolved outline
 #
-# an empty glyph stores no header, so it has none.
+# the box is computed by glyf.outline_bounds over the outline glyph_outline
+# produces, the same box render_glyph places against, so a bitmap sized from it
+# fits what render_glyph draws. the glyf header's stored box is never consulted:
+# a font whose stored boxes are correct gets identical numbers, and a font whose
+# composite box is stale or zero gets the true extent. a glyph that resolves to no
+# points, an empty glyph or a composite of empty components, has no box. the
+# caller sizes the scratch buffers as for glyph_outline.
 # ---
-# f:     prepared font handle
-# glyph: glyph index to read
-# ret:   the header, none for an empty glyph, or missing_table (loca or glyf),
-#        glyph_out_of_range, a loca failure or truncated
-pub fun glyph_info(f: *Font, glyph: u16) res[opt[glyf.GlyphInfo], FontError] {
-    val at: res[Outlines, FontError] = outlines(f);
-    if (sel at.err)            { ret res[opt[glyf.GlyphInfo], FontError].err{at.err}; }
-    if (glyph >= f.num_glyphs) { ret res[opt[glyf.GlyphInfo], FontError].err{FontError.glyph_out_of_range{glyph}}; }
-
-    val range: res[loca.GlyphRange, FontError] = loca.glyph_range(f.data, f.len, at.ok.loca, f.head.index_to_loc_format, glyph);
-    if (sel range.err)            { ret res[opt[glyf.GlyphInfo], FontError].err{range.err}; }
-    if (loca.is_empty(?range.ok)) { ret res[opt[glyf.GlyphInfo], FontError].ok{opt[glyf.GlyphInfo].none{}}; }
-
-    val info: res[glyf.GlyphInfo, FontError] = glyf.glyph_header(f.data, f.len, at.ok.glyf + range.ok.start::usize);
-    if (sel info.err) { ret res[opt[glyf.GlyphInfo], FontError].err{info.err}; }
-    ret res[opt[glyf.GlyphInfo], FontError].ok{opt[glyf.GlyphInfo].some{info.ok}};
+# f:        prepared font handle
+# glyph:    glyph index to measure
+# pts:      scratch buffer for extracted points
+# pts_cap:  capacity of pts
+# ends:     scratch buffer for contour end indices
+# ends_cap: capacity of ends
+# ret:      the box, none for a glyph with no outline, or any glyph_outline failure
+pub fun glyph_info(f: *Font, glyph: u16, pts: *glyf.Point, pts_cap: usize, ends: *u16, ends_cap: usize) res[opt[glyf.Bounds], FontError] {
+    val o: res[glyf.Outline, FontError] = glyph_outline(f, glyph, pts, pts_cap, ends, ends_cap);
+    if (sel o.err) { ret res[opt[glyf.Bounds], FontError].err{o.err}; }
+    ret res[opt[glyf.Bounds], FontError].ok{glyf.outline_bounds(pts, o.ok.num_points)};
 }
 
 # read the point and contour bounds that size outline buffers for this font
@@ -361,10 +362,12 @@ pub fun scale_for_em_size(f: *Font, pixels: f32) f32 {
 #
 # extracts the glyph outline, flattens its curves, and fills the bitmap with the
 # glyph placed against its own bounding box: the glyph's lower-left corner maps to
-# the bitmap's lower-left. every pixel is written, so the bitmap need not be
-# pre-cleared. an empty glyph clears the bitmap to zero. a composite glyph renders
-# like any other: its components are composed into one outline first. the caller
-# sizes the points, contour-ends, and edges scratch buffers.
+# the bitmap's lower-left. that box is glyf.outline_bounds of the resolved outline,
+# exactly what glyph_info reports, so a bitmap sized from glyph_info fits. every
+# pixel is written, so the bitmap need not be pre-cleared. a glyph with no outline
+# clears the bitmap to zero. a composite glyph renders like any other: its
+# components are composed into one outline first. the caller sizes the points,
+# contour-ends, and edges scratch buffers.
 # ---
 # f:         prepared font handle
 # glyph:     glyph index to render
@@ -384,21 +387,15 @@ pub fun render_glyph(f: *Font, glyph: u16, scale: f32, pts: *glyf.Point, pts_cap
     val o: res[glyf.Outline, FontError] = glyph_outline(f, glyph, pts, pts_cap, ends, ends_cap);
     if (sel o.err) { ret err[FontError].err{o.err}; }
 
-    val info: res[opt[glyf.GlyphInfo], FontError] = glyph_info(f, glyph);
-    if (sel info.err) { ret err[FontError].err{info.err}; }
-    # an empty glyph stores no header, and a header over no points draws nothing.
-    if (!sel info.ok.some) {
-        clear_bitmap(bitmap, width, height);
-        ret err[FontError].ok{};
-    }
-    if (o.ok.num_points == 0) {
+    val box: opt[glyf.Bounds] = glyf.outline_bounds(pts, o.ok.num_points);
+    if (!sel box.some) {
         clear_bitmap(bitmap, width, height);
         ret err[FontError].ok{};
     }
 
     # place the glyph against its bounding box so its lower-left maps to the origin.
-    val x_off: f32 = -(info.ok.some.x_min::f32) * scale;
-    val y_off: f32 = -(info.ok.some.y_min::f32) * scale;
+    val x_off: f32 = -(box.some.x_min::f32) * scale;
+    val y_off: f32 = -(box.some.y_min::f32) * scale;
 
     val count: res[usize, FontError] = raster.flatten(pts, o.ok.num_points, ends, o.ok.num_contours, scale, x_off, y_off, height, edges, edges_cap);
     if (sel count.err) { ret err[FontError].err{count.err}; }
@@ -648,21 +645,52 @@ test "info: outline extraction end to end" {
     ret 0;
 }
 
-test "info: glyph info reads the header and skips empty glyphs" {
+# test whether a bounds query produced exactly this box
+fun boxed(r: res[opt[glyf.Bounds], FontError], x0: i16, y0: i16, x1: i16, y1: i16) bool {
+    if (!sel r.ok)      { ret false; }
+    if (!sel r.ok.some) { ret false; }
+    val b: glyf.Bounds = r.ok.some;
+    ret b.x_min == x0 && b.y_min == y0 && b.x_max == x1 && b.y_max == y1;
+}
+
+test "info: glyph info measures the outline and skips empty glyphs" {
     build_font();
-    var f:   Font                                = opened(?font_buf[0], 320);
-    val tri: res[opt[glyf.GlyphInfo], FontError] = glyph_info(?f, 1);
-    if (!sel tri.ok)                                          { ret 1; }
-    if (!sel tri.ok.some)                                     { ret 2; }
-    if (tri.ok.some.x_min != 100 || tri.ok.some.y_max != 400) { ret 3; }
-    val empty: res[opt[glyf.GlyphInfo], FontError] = glyph_info(?f, 0);
-    if (!sel empty.ok)      { ret 4; }
-    if (!sel empty.ok.none) { ret 5; }
-    val past: res[opt[glyf.GlyphInfo], FontError] = glyph_info(?f, 2);
-    if (!sel past.err)                    { ret 6; }
-    if (!sel past.err.glyph_out_of_range) { ret 7; }
+    var f: Font = opened(?font_buf[0], 320);
+    if (!boxed(glyph_info(?f, 1, ?e2e_pts[0], 8, ?e2e_ends[0], 4), 100, 100, 300, 400)) { ret 1; }
+    val empty: res[opt[glyf.Bounds], FontError] = glyph_info(?f, 0, ?e2e_pts[0], 8, ?e2e_ends[0], 4);
+    if (!sel empty.ok)      { ret 2; }
+    if (!sel empty.ok.none) { ret 3; }
+    val past: res[opt[glyf.Bounds], FontError] = glyph_info(?f, 2, ?e2e_pts[0], 8, ?e2e_ends[0], 4);
+    if (!sel past.err)                    { ret 4; }
+    if (!sel past.err.glyph_out_of_range) { ret 5; }
     ret 0;
 }
+
+test "info: a stored box that lies does not move a simple glyph" {
+    build_font();
+    var f: Font = opened(?font_buf[0], 320);
+    if (!done(render_glyph(?f, 1, 0.02, ?e2e_pts[0], 8, ?e2e_ends[0], 4, ?e2e_edges[0], 64, ?e2e_bmp[0], 8, 8))) { ret 1; }
+    var i: usize = 0;
+    for (i < 64) {
+        ref_bmp[i] = e2e_bmp[i];
+        i          = i + 1;
+    }
+    # zero the triangle's stored box. the header still says one contour
+    w16(?font_buf[0], 280, 0);
+    w16(?font_buf[0], 282, 0);
+    w16(?font_buf[0], 284, 0);
+    w16(?font_buf[0], 286, 0);
+    if (!boxed(glyph_info(?f, 1, ?e2e_pts[0], 8, ?e2e_ends[0], 4), 100, 100, 300, 400))                          { ret 2; }
+    if (!done(render_glyph(?f, 1, 0.02, ?e2e_pts[0], 8, ?e2e_ends[0], 4, ?e2e_edges[0], 64, ?e2e_bmp[0], 8, 8))) { ret 3; }
+    i = 0;
+    for (i < 64) {
+        if (e2e_bmp[i] != ref_bmp[i]) { ret 4; }
+        i = i + 1;
+    }
+    ret 0;
+}
+
+var ref_bmp: [80]u8;
 
 test "info: render glyph covers interior, leaves corner empty" {
     build_font();
@@ -939,6 +967,44 @@ test "info: composite renders both components" {
     if (dv_bmp[16 * 4 + 1] != 0) { ret 4; }
     # nothing reaches the far column
     if (dv_bmp[5 * 4 + 3] != 0) { ret 5; }
+    ret 0;
+}
+
+test "info: composite bounds come from the resolved outline" {
+    build_dejavu();
+    var f: Font = opened(?dv_buf[0], 512);
+    # dejavu's stored boxes are correct, so the measured box equals them
+    if (!boxed(glyph_info(?f, 3, ?dv_pts[0], 16, ?dv_ends[0], 4), 201, -375, 388, 1556)) { ret 1; }
+    if (!boxed(glyph_info(?f, 5, ?dv_pts[0], 16, ?dv_ends[0], 4), -3, -375, 595, 1841))  { ret 2; }
+    # a simple component measures the same way
+    if (!boxed(glyph_info(?f, 2, ?dv_pts[0], 16, ?dv_ends[0], 4), 193, 0, 377, 1556)) { ret 3; }
+    ret 0;
+}
+
+test "info: a stale composite box renders at the outline's true extent" {
+    build_dejavu();
+    var f: Font = opened(?dv_buf[0], 512);
+    if (!done(render_glyph(?f, 3, 0.01035, ?dv_pts[0], 16, ?dv_ends[0], 4, ?dv_edges[0], 128, ?dv_bmp[0], 4, 20))) { ret 1; }
+    var i: usize = 0;
+    for (i < 80) {
+        ref_bmp[i] = dv_bmp[i];
+        i          = i + 1;
+    }
+    # a stale box: the composite claims it sits far away from where its components land
+    w16(?dv_buf[0], DV_G3 + 2, 0xFC18); # xMin = -1000
+    w16(?dv_buf[0], DV_G3 + 4, 0xFC18); # yMin = -1000
+    w16(?dv_buf[0], DV_G3 + 6, 0xFC18); # xMax = -1000
+    w16(?dv_buf[0], DV_G3 + 8, 0xFC18); # yMax = -1000
+    if (!boxed(glyph_info(?f, 3, ?dv_pts[0], 16, ?dv_ends[0], 4), 201, -375, 388, 1556))                           { ret 2; }
+    if (!done(render_glyph(?f, 3, 0.01035, ?dv_pts[0], 16, ?dv_ends[0], 4, ?dv_edges[0], 128, ?dv_bmp[0], 4, 20))) { ret 3; }
+    i = 0;
+    for (i < 80) {
+        if (dv_bmp[i] != ref_bmp[i]) { ret 4; }
+        i = i + 1;
+    }
+    # and the stem and dot are still where the composite test expects them
+    if (dv_bmp[5 * 4 + 1] == 0)  { ret 5; }
+    if (dv_bmp[18 * 4 + 1] == 0) { ret 6; }
     ret 0;
 }
 
