@@ -115,6 +115,13 @@ rasterizes an accented letter exactly as it does a simple one. Size the point an
 contour buffers from `outline_maxima`, since a composite's resolved point count
 exceeds anything `point_count` reports for a simple glyph.
 
+A glyph's bounding box is measured from that resolved outline, never read from
+the `glyf` header. `glyph_info` reports it and `render_glyph` places against it,
+both through `outline_bounds`, so a bitmap sized from `glyph_info` fits what
+`render_glyph` draws. For a font whose stored boxes are correct the numbers are
+identical to the header's. For a font whose composite box is stale or zero, the
+glyph lands where its components actually are.
+
 Known limitations of this pass:
 
 - **Point-matched components are rejected.** A component placed by matching a

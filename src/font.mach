@@ -55,12 +55,14 @@ fwd loca.is_empty;
 fwd loca.glyph_range;
 
 fwd glyf.Point;
-fwd glyf.GlyphInfo;
+fwd glyf.GlyphHeader;
 fwd glyf.Outline;
+fwd glyf.Bounds;
 fwd glyf.Xform;
 fwd glyf.Component;
 fwd glyf.glyph_header;
 fwd glyf.is_composite;
+fwd glyf.outline_bounds;
 fwd glyf.point_count;
 fwd glyf.extract_simple;
 fwd glyf.read_component;
