@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-18
+
 ### Changed
 - api: A glyph's bounding box comes from its resolved outline, through the new
   `glyf.outline_bounds` (re-exported as `font.outline_bounds`), never from the
