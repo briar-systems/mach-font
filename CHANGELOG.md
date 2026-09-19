@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- deps: std moves to `tag/v5.7.1`, so a root project on std 5.7.x can override this library's std without breaking it. std 5.7.1 requires mach 5.5.2, so the manifest's compiler range rises to `^5.5.2`. mach-font imports only `std.runtime` and `std.types`, none of which std 5 reshaped, so no source changes.
+
 ## [0.5.0] - 2026-09-18
 
 ### Changed
