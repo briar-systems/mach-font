@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-19
+
 ### Changed
 - deps: std is declared by version range (`^5.7.1`) rather than an exact tag, with the realized `dep/std` gitlink as the pin. A root project that declares std by range no longer conflicts with this library on the next std minor.
 
