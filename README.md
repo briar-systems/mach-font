@@ -70,7 +70,9 @@ is host-specific.
 
 ```
 src/
-  font.mach     library surface: re-exports the public api behind `use font;`
+  lib/
+    font.mach   library surface and artifact entry: re-exports the public api
+                behind `use font;`
   error.mach    FontError, one case per way an operation can fail
   read.mach     bounds-checked big-endian reads, the shared foundation
   table.mach    sfnt offset table + table directory lookup by tag
