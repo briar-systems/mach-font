@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-25
+
 ### Changed
 - **Breaking: builds against std 8.0.0 and requires mach 5.12** (#53). `[dep.std]` moves from `^6.0` to `^8.0`, realized to v8.0.0 by the committed `dep/std` gitlink, and `[project].mach` rises from `^5.9` to `^5.12`, which std 8 requires. Resolution is flat, so a consumer of mach-font must move to std 8 and mach 5.12 with it, and must rebuild anything that links std rather than only recompiling against the new sources. mach-font imports only `std.runtime` and `std.types`, none of which std 7 or 8 changed, so no source changed. Every module that holds a test is reached from `font.mach`, so mach 5.12's closure-scoped `mach test .` (briar-systems/mach#3813) still collects all 106 tests on every target.
 - ci: the lib job seeds mach v5.12.0 until the family pin moves (briar-systems/.github#103) (#53).
