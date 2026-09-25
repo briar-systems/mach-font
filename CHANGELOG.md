@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-25
+
+### Changed
+- The library surface moves from `src/font.mach` to `src/lib/font.mach`, following the family layout for artifact entries (#57). A bare `use font;` is unaffected, since it binds the default artifact's entry wherever that lives, and every other module path (`font.glyf`, `font.info`, `font.raster` and the rest) is unchanged. The entry module's own full path becomes `font.lib.font` in place of `font.font`. `src/lib/` is the artifact that builds a compiled library to ship, not the surface a direct dependency names, so a dependency imports the bare `use font;`. `mach test . --list` collects the same 106 tests as before.
+
 ## [0.8.0] - 2026-09-25
 
 ### Changed
