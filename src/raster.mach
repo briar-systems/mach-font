@@ -262,12 +262,17 @@ pub fun fill(edges: *Edge, count: usize, bitmap: *u8, width: u16, height: u16) {
     }
 }
 
-var sq_pts:   [4]glyf.Point;
-var sq_ends:  [1]u16;
+#[testing]
+var sq_pts: [4]glyf.Point;
+#[testing]
+var sq_ends: [1]u16;
+#[testing]
 var sq_edges: [64]Edge;
-var sq_bmp:   [64]u8;
+#[testing]
+var sq_bmp: [64]u8;
 
 # an axis-aligned square contour, all on-curve, in font units
+#[testing]
 fun build_square() {
     sq_pts[0]  = glyf.Point{x: 0, y: 0, on_curve: true};
     sq_pts[1]  = glyf.Point{x: 100, y: 0, on_curve: true};
@@ -276,7 +281,7 @@ fun build_square() {
     sq_ends[0] = 3;
 }
 
-test "raster: flatten square yields four edges" {
+test flatten__square {
     build_square();
     # scale 100 font units to 8 pixels
     val n: res[usize, FontError] = flatten(?sq_pts[0], 4, ?sq_ends[0], 1, 0.08, 0.0, 0.0, 8, ?sq_edges[0], 64);
@@ -285,7 +290,7 @@ test "raster: flatten square yields four edges" {
     ret 0;
 }
 
-test "raster: full edge buffer rejected" {
+test flatten__edges_full {
     build_square();
     val n: res[usize, FontError] = flatten(?sq_pts[0], 4, ?sq_ends[0], 1, 0.08, 0.0, 0.0, 8, ?sq_edges[0], 3);
     if (!sel n.err)            { ret 1; }
@@ -293,7 +298,7 @@ test "raster: full edge buffer rejected" {
     ret 0;
 }
 
-test "raster: contour end past the points rejected" {
+test flatten__contour_end_past_points {
     build_square();
     sq_ends[0] = 4;
     val n: res[usize, FontError] = flatten(?sq_pts[0], 4, ?sq_ends[0], 1, 0.08, 0.0, 0.0, 8, ?sq_edges[0], 64);
@@ -303,25 +308,18 @@ test "raster: contour end past the points rejected" {
     ret 0;
 }
 
-test "raster: fill square covers interior" {
+test fill__square {
     build_square();
-    val n: res[usize, FontError] = flatten(?sq_pts[0], 4, ?sq_ends[0], 1, 0.08, 0.0, 0.0, 8, ?sq_edges[0], 64);
-    if (!sel n.ok) { ret 1; }
-    fill(?sq_edges[0], n.ok, ?sq_bmp[0], 8, 8);
-    # the 100x100-unit square scaled by 0.08 covers the whole 8x8 bitmap.
-    if (sq_bmp[3 * 8 + 3] != 255) { ret 1; } # center fully covered
-    if (sq_bmp[3 * 8 + 4] != 255) { ret 1; }
-    ret 0;
-}
-
-test "raster: fill leaves exterior empty" {
-    build_square();
-    # scale the square to only the top-left 4x4 region of a 16x16 bitmap
-    val n: res[usize, FontError] = flatten(?sq_pts[0], 4, ?sq_ends[0], 1, 0.04, 0.0, 12.0, 16, ?sq_edges[0], 64);
-    if (!sel n.ok) { ret 1; }
+    # the 100x100-unit square scaled by 0.08 covers the whole 8x8 bitmap
+    val full: res[usize, FontError] = flatten(?sq_pts[0], 4, ?sq_ends[0], 1, 0.08, 0.0, 0.0, 8, ?sq_edges[0], 64);
+    if (!sel full.ok) { ret 1; }
+    fill(?sq_edges[0], full.ok, ?sq_bmp[0], 8, 8);
+    if (sq_bmp[3 * 8 + 3] != 255 || sq_bmp[3 * 8 + 4] != 255) { ret 2; }
+    # scaled to the top-left 4x4 of a 16x16 bitmap, a far pixel stays empty
+    val small: res[usize, FontError] = flatten(?sq_pts[0], 4, ?sq_ends[0], 1, 0.04, 0.0, 12.0, 16, ?sq_edges[0], 64);
+    if (!sel small.ok) { ret 3; }
     var big: [256]u8;
-    fill(?sq_edges[0], n.ok, ?big[0], 16, 16);
-    # a pixel far from the square is empty
-    if (big[15 * 16 + 15] != 0) { ret 1; }
+    fill(?sq_edges[0], small.ok, ?big[0], 16, 16);
+    if (big[15 * 16 + 15] != 0) { ret 4; }
     ret 0;
 }

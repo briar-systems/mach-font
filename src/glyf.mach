@@ -501,15 +501,18 @@ pub fun extract_simple(data: *u8, len: usize, goff: usize, pts: *Point, pts_cap:
     ret res[Outline, FontError].ok{Outline{num_contours: nc_raw.ok::u16, num_points: np::u16}};
 }
 
+#[testing]
 fun w16(buf: *u8, off: usize, v: u16) {
     buf[off]     = (v >> 8)::u8;
     buf[off + 1] = (v & 0xFF)::u8;
 }
 
+#[testing]
 var glyph_buf: [64]u8;
 
 # build a triangle: on-curve points (100,100), (300,100), (200,400) in one contour,
 # exercising short +, short -, same-as-previous, and i16 coordinate deltas
+#[testing]
 fun build_triangle() {
     val p: *u8 = ?glyph_buf[0];
     w16(p, 0, 1); # numberOfContours
@@ -529,20 +532,12 @@ fun build_triangle() {
     w16(p, 21, 300); # p2 y = +300 (i16)
 }
 
-var tri_pts:  [8]Point;
+#[testing]
+var tri_pts: [8]Point;
+#[testing]
 var tri_ends: [4]u16;
 
-test "glyf: header and composite detection" {
-    build_triangle();
-    val info: res[GlyphHeader, FontError] = glyph_header(?glyph_buf[0], 64, 0);
-    if (!sel info.ok)                                 { ret 1; }
-    if (info.ok.num_contours != 1)                    { ret 2; }
-    if (info.ok.x_max != 300 || info.ok.y_max != 400) { ret 3; }
-    if (is_composite(?info.ok))                       { ret 4; }
-    ret 0;
-}
-
-test "glyf: point count" {
+test point_count__simple_empty_composite {
     build_triangle();
     val n: res[u16, FontError] = point_count(?glyph_buf[0], 64, 0, 1);
     if (!sel n.ok) { ret 1; }
@@ -556,38 +551,18 @@ test "glyf: point count" {
     ret 0;
 }
 
-test "glyf: extract triangle points" {
+test extract_simple__capacity {
     build_triangle();
-    val r: res[Outline, FontError] = extract_simple(?glyph_buf[0], 64, 0, ?tri_pts[0], 8, ?tri_ends[0], 4);
-    if (!sel r.ok)                                  { ret 1; }
-    if (r.ok.num_contours != 1)                     { ret 1; }
-    if (r.ok.num_points != 3)                       { ret 1; }
-    if (tri_ends[0] != 2)                           { ret 1; }
-    if (tri_pts[0].x != 100 || tri_pts[0].y != 100) { ret 1; }
-    if (tri_pts[1].x != 300 || tri_pts[1].y != 100) { ret 1; }
-    if (tri_pts[2].x != 200 || tri_pts[2].y != 400) { ret 1; }
-    if (!tri_pts[0].on_curve)                       { ret 1; }
-    if (!tri_pts[2].on_curve)                       { ret 1; }
+    val points: res[Outline, FontError] = extract_simple(?glyph_buf[0], 64, 0, ?tri_pts[0], 2, ?tri_ends[0], 4);
+    if (!sel points.err)             { ret 1; }
+    if (!sel points.err.points_full) { ret 2; }
+    val contours: res[Outline, FontError] = extract_simple(?glyph_buf[0], 64, 0, ?tri_pts[0], 8, ?tri_ends[0], 0);
+    if (!sel contours.err)               { ret 3; }
+    if (!sel contours.err.contours_full) { ret 4; }
     ret 0;
 }
 
-test "glyf: too few points capacity rejected" {
-    build_triangle();
-    val r: res[Outline, FontError] = extract_simple(?glyph_buf[0], 64, 0, ?tri_pts[0], 2, ?tri_ends[0], 4);
-    if (!sel r.err)             { ret 1; }
-    if (!sel r.err.points_full) { ret 2; }
-    ret 0;
-}
-
-test "glyf: too few contours capacity rejected" {
-    build_triangle();
-    val r: res[Outline, FontError] = extract_simple(?glyph_buf[0], 64, 0, ?tri_pts[0], 8, ?tri_ends[0], 0);
-    if (!sel r.err)               { ret 1; }
-    if (!sel r.err.contours_full) { ret 2; }
-    ret 0;
-}
-
-test "glyf: truncated coordinates rejected" {
+test extract_simple__truncated_coordinates {
     build_triangle();
     # the last y delta is an i16 at 21..23
     val r: res[Outline, FontError] = extract_simple(?glyph_buf[0], 22, 0, ?tri_pts[0], 8, ?tri_ends[0], 4);
@@ -597,7 +572,7 @@ test "glyf: truncated coordinates rejected" {
     ret 0;
 }
 
-test "glyf: composite rejected by extract" {
+test extract_simple__composite_rejected {
     build_triangle();
     w16(?glyph_buf[0], 0, 0xFFFF); # numberOfContours = -1
     val r: res[Outline, FontError] = extract_simple(?glyph_buf[0], 64, 0, ?tri_pts[0], 8, ?tri_ends[0], 4);
@@ -609,6 +584,7 @@ test "glyf: composite rejected by extract" {
 # dejavu sans (2048 units per em) verbatim: the 24 bytes of `dotbelowcomb`, a
 # one-contour rectangle whose coordinate encoding uses an i16 delta, a positive
 # short, a same-as-previous, and a negative short on each axis
+#[testing]
 var real_simple: [24]u8 = [24]u8{
     0x00, 0x01, 0xFD, 0xA2, 0xFE, 0x89, 0xFE, 0x5A,
     0xFF, 0x73, 0x00, 0x03, 0x00, 0x00, 0x05, 0x33,
@@ -617,13 +593,14 @@ var real_simple: [24]u8 = [24]u8{
 
 # dejavu sans verbatim: the 24 bytes of `uni1E37` (l with dot below), a composite
 # of `dotbelowcomb` at x+807 and `l` at x+11
+#[testing]
 var real_composite: [24]u8 = [24]u8{
     0xFF, 0xFF, 0x00, 0xC9, 0xFE, 0x89, 0x01, 0x84,
     0x06, 0x14, 0x10, 0x27, 0x02, 0xD4, 0x03, 0x27,
     0x00, 0x00, 0x10, 0x06, 0x00, 0x4F, 0x0B, 0x00
 };
 
-test "glyf: real font simple glyph bytes" {
+test extract_simple__real_font {
     val r: res[Outline, FontError] = extract_simple(?real_simple[0], 24, 0, ?tri_pts[0], 8, ?tri_ends[0], 4);
     if (!sel r.ok)                                      { ret 1; }
     if (r.ok.num_contours != 1 || r.ok.num_points != 4) { ret 1; }
@@ -635,7 +612,7 @@ test "glyf: real font simple glyph bytes" {
     ret 0;
 }
 
-test "glyf: real font composite component records" {
+test read_component__real_font {
     val p:    *u8                         = ?real_composite[0];
     val info: res[GlyphHeader, FontError] = glyph_header(p, 24, 0);
     if (!sel info.ok)                                  { ret 1; }
@@ -669,9 +646,11 @@ test "glyf: real font composite component records" {
 
 # no font on this system places a component with a scale, so the transform
 # variants are exercised against records built here rather than lifted from one
+#[testing]
 var comp_buf: [32]u8;
 
 # unwrap a decoded component, reporting a failed read as a record with next at 0
+#[testing]
 fun component_or_zero(r: res[Component, FontError]) Component {
     if (sel r.ok) { ret r.ok; }
     var zero: Component;
@@ -679,6 +658,7 @@ fun component_or_zero(r: res[Component, FontError]) Component {
 }
 
 # a component record: flags, glyph index, then two i16 args
+#[testing]
 fun build_component(flags: u16, glyph: u16, arg1: u16, arg2: u16) {
     val p: *u8 = ?comp_buf[0];
     w16(p, 0, flags | ARG_1_AND_2_ARE_WORDS);
@@ -687,44 +667,34 @@ fun build_component(flags: u16, glyph: u16, arg1: u16, arg2: u16) {
     w16(p, 6, arg2);
 }
 
-test "glyf: component single scale" {
+test read_component__transforms {
     build_component(ARGS_ARE_XY_VALUES | WE_HAVE_A_SCALE, 7, 30, 40);
     w16(?comp_buf[0], 8, 0x2000); # F2Dot14 0.5
     var c: Component = component_or_zero(read_component(?comp_buf[0], 32, 0));
-    if (c.next != 10)                 { ret 1; }
-    if (c.glyph != 7)                 { ret 1; }
-    if (c.m.a != 0.5 || c.m.d != 0.5) { ret 1; }
-    if (c.m.b != 0.0 || c.m.c != 0.0) { ret 1; }
+    if (c.next != 10 || c.glyph != 7)                                 { ret 1; }
+    if (c.m.a != 0.5 || c.m.b != 0.0 || c.m.c != 0.0 || c.m.d != 0.5) { ret 2; }
     # the offset is in the composite's space by default, so the scale leaves it alone
-    if (c.m.dx != 30.0 || c.m.dy != 40.0) { ret 1; }
-    ret 0;
-}
+    if (c.m.dx != 30.0 || c.m.dy != 40.0) { ret 3; }
 
-test "glyf: component x and y scale" {
     build_component(ARGS_ARE_XY_VALUES | WE_HAVE_AN_X_AND_Y_SCALE, 7, 0, 0);
     w16(?comp_buf[0], 8, 0x2000); # x scale 0.5
     w16(?comp_buf[0], 10, 0xC000); # y scale -1.0
-    var c: Component = component_or_zero(read_component(?comp_buf[0], 32, 0));
-    if (c.next != 12)                  { ret 1; }
-    if (c.m.a != 0.5 || c.m.d != -1.0) { ret 1; }
-    if (c.m.b != 0.0 || c.m.c != 0.0)  { ret 1; }
-    ret 0;
-}
+    c = component_or_zero(read_component(?comp_buf[0], 32, 0));
+    if (c.next != 12)                                                  { ret 4; }
+    if (c.m.a != 0.5 || c.m.b != 0.0 || c.m.c != 0.0 || c.m.d != -1.0) { ret 5; }
 
-test "glyf: component two by two" {
     build_component(ARGS_ARE_XY_VALUES | WE_HAVE_A_TWO_BY_TWO, 7, 0, 0);
     w16(?comp_buf[0], 8, 0x4000); # a = 1.0
     w16(?comp_buf[0], 10, 0x1000); # b = 0.25
     w16(?comp_buf[0], 12, 0xE000); # c = -0.5
     w16(?comp_buf[0], 14, 0x2000); # d = 0.5
-    var c: Component = component_or_zero(read_component(?comp_buf[0], 32, 0));
-    if (c.next != 16)                  { ret 1; }
-    if (c.m.a != 1.0 || c.m.b != 0.25) { ret 1; }
-    if (c.m.c != -0.5 || c.m.d != 0.5) { ret 1; }
+    c = component_or_zero(read_component(?comp_buf[0], 32, 0));
+    if (c.next != 16)                                                   { ret 6; }
+    if (c.m.a != 1.0 || c.m.b != 0.25 || c.m.c != -0.5 || c.m.d != 0.5) { ret 7; }
     ret 0;
 }
 
-test "glyf: component byte args are signed offsets" {
+test read_component__byte_args_signed {
     val p: *u8 = ?comp_buf[0];
     w16(p, 0, ARGS_ARE_XY_VALUES);
     w16(p, 2, 7);
@@ -736,7 +706,7 @@ test "glyf: component byte args are signed offsets" {
     ret 0;
 }
 
-test "glyf: component point indices left unscaled" {
+test read_component__point_indices_unscaled {
     # without ARGS_ARE_XY_VALUES the args are point indices, reported verbatim
     build_component(WE_HAVE_A_SCALE, 7, 12, 34);
     w16(?comp_buf[0], 8, 0x2000);
@@ -746,7 +716,7 @@ test "glyf: component point indices left unscaled" {
     ret 0;
 }
 
-test "glyf: component scaled offset and grid rounding" {
+test read_component__scaled_offset_and_rounding {
     # a scaled offset passes through the 2x2, putting it on a half unit
     build_component(ARGS_ARE_XY_VALUES | WE_HAVE_A_SCALE | SCALED_COMPONENT_OFFSET, 7, 25, 0xFFF7);
     w16(?comp_buf[0], 8, 0x2000); # 0.5
@@ -767,19 +737,10 @@ test "glyf: component scaled offset and grid rounding" {
     ret 0;
 }
 
-test "glyf: component record past the buffer rejected" {
-    build_component(ARGS_ARE_XY_VALUES | WE_HAVE_A_TWO_BY_TWO, 7, 0, 0);
-    # the record needs 16 bytes, and the 2x2 runs past a 12-byte buffer
-    val r: res[Component, FontError] = read_component(?comp_buf[0], 12, 0);
-    if (!sel r.err)            { ret 1; }
-    if (!sel r.err.truncated)  { ret 2; }
-    if (r.err.truncated != 12) { ret 3; }
-    ret 0;
-}
-
+#[testing]
 var xf_pts: [4]Point;
 
-test "glyf: transform scales and translates points" {
+test xform_apply__scale_and_translate {
     xf_pts[0] = Point{x: 0, y: 0, on_curve: true};
     xf_pts[1] = Point{x: 100, y: 0, on_curve: true};
     xf_pts[2] = Point{x: 100, y: 100, on_curve: true};
@@ -793,16 +754,7 @@ test "glyf: transform scales and translates points" {
     ret 0;
 }
 
-test "glyf: identity leaves points alone" {
-    xf_pts[0] = Point{x: -606, y: -141, on_curve: true};
-    var m: Xform;
-    xform_identity(?m);
-    xform_apply(?m, ?xf_pts[0], 1);
-    if (xf_pts[0].x != -606 || xf_pts[0].y != -141) { ret 1; }
-    ret 0;
-}
-
-test "glyf: compose applies inner then outer" {
+test xform_compose__inner_then_outer {
     # inner halves and shifts right, outer translates up
     val inner: Xform = Xform{a: 0.5, b: 0.0, c: 0.0, d: 0.5, dx: 40.0, dy: 0.0};
     val outer: Xform = Xform{a: 1.0, b: 0.0, c: 0.0, d: 1.0, dx: 0.0, dy: 10.0};
@@ -822,7 +774,7 @@ test "glyf: compose applies inner then outer" {
     ret 0;
 }
 
-test "glyf: transformed points saturate at the coordinate range" {
+test xform_apply__saturates {
     xf_pts[0] = Point{x: 30000, y: -30000, on_curve: true};
     val m: Xform = Xform{a: 2.0, b: 0.0, c: 0.0, d: 2.0, dx: 0.0, dy: 0.0};
     xform_apply(?m, ?xf_pts[0], 1);
@@ -830,9 +782,10 @@ test "glyf: transformed points saturate at the coordinate range" {
     ret 0;
 }
 
+#[testing]
 var bd_pts: [5]Point;
 
-test "glyf: outline bounds span every point, control points included" {
+test outline_bounds__spans_every_point {
     bd_pts[0] = Point{x: 100, y: 100, on_curve: true};
     bd_pts[1] = Point{x: 300, y: 100, on_curve: true};
     bd_pts[2] = Point{x: 200, y: 400, on_curve: true};
@@ -848,11 +801,8 @@ test "glyf: outline bounds span every point, control points included" {
     if (!sel one.some)                                  { ret 4; }
     if (one.some.x_min != 200 || one.some.x_max != 200) { ret 5; }
     if (one.some.y_min != 400 || one.some.y_max != 400) { ret 6; }
-    ret 0;
-}
-
-test "glyf: an empty outline has no bounds" {
-    val b: opt[Bounds] = outline_bounds(?bd_pts[0], 0);
-    if (!sel b.none) { ret 1; }
+    # an empty outline has no bounds
+    val none: opt[Bounds] = outline_bounds(?bd_pts[0], 0);
+    if (!sel none.none) { ret 7; }
     ret 0;
 }

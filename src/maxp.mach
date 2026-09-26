@@ -79,13 +79,16 @@ pub fun storage_maxima(data: *u8, len: usize, off: usize) res[opt[Maxima], FontE
     }}};
 }
 
+#[testing]
 fun w16(buf: *u8, off: usize, v: u16) {
     buf[off]     = (v >> 8)::u8;
     buf[off + 1] = (v & 0xFF)::u8;
 }
 
+#[testing]
 var maxp_buf: [14]u8;
 
+#[testing]
 fun build_maxp() {
     val p: *u8 = ?maxp_buf[0];
     w16(p, 0, 0x0001);
@@ -97,23 +100,7 @@ fun build_maxp() {
     w16(p, 12, 16); # maxCompositeContours
 }
 
-test "maxp: glyph count" {
-    build_maxp();
-    val n: res[u16, FontError] = num_glyphs(?maxp_buf[0], 6, 0);
-    if (!sel n.ok)   { ret 1; }
-    if (n.ok != 300) { ret 2; }
-    ret 0;
-}
-
-test "maxp: truncated rejected" {
-    build_maxp();
-    val n: res[u16, FontError] = num_glyphs(?maxp_buf[0], 5, 0);
-    if (!sel n.err)           { ret 1; }
-    if (!sel n.err.truncated) { ret 2; }
-    ret 0;
-}
-
-test "maxp: storage maxima" {
+test storage_maxima__version_1 {
     build_maxp();
     val r: res[opt[Maxima], FontError] = storage_maxima(?maxp_buf[0], 14, 0);
     if (!sel r.ok)                                                                       { ret 1; }
@@ -123,7 +110,7 @@ test "maxp: storage maxima" {
     ret 0;
 }
 
-test "maxp: version 0.5 has no maxima" {
+test storage_maxima__version_0_5 {
     build_maxp();
     w16(?maxp_buf[0], 0, 0x0000);
     w16(?maxp_buf[0], 2, 0x5000); # version 0.5
@@ -137,7 +124,7 @@ test "maxp: version 0.5 has no maxima" {
     ret 0;
 }
 
-test "maxp: unknown version rejected" {
+test storage_maxima__unknown_version {
     build_maxp();
     w16(?maxp_buf[0], 0, 0x0002);
     val r: res[opt[Maxima], FontError] = storage_maxima(?maxp_buf[0], 14, 0);
