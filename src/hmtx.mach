@@ -72,7 +72,7 @@ fun build_hmtx() {
     w16(?hmtx_buf[0], 10, 60); # glyph 3 lsb
 }
 
-test "hmtx: long metric" {
+test metrics__long_metric {
     build_hmtx();
     val r: res[HMetrics, FontError] = metrics(?hmtx_buf[0], 12, 0, 2, 4, 1);
     if (!sel r.ok)           { ret 1; }
@@ -81,7 +81,7 @@ test "hmtx: long metric" {
     ret 0;
 }
 
-test "hmtx: trailing glyph shares last advance" {
+test metrics__trailing_glyph_shares_last_advance {
     build_hmtx();
     val r: res[HMetrics, FontError] = metrics(?hmtx_buf[0], 12, 0, 2, 4, 3);
     if (!sel r.ok)           { ret 1; }
@@ -90,7 +90,7 @@ test "hmtx: trailing glyph shares last advance" {
     ret 0;
 }
 
-test "hmtx: glyph out of range rejected" {
+test metrics__glyph_out_of_range {
     build_hmtx();
     val r: res[HMetrics, FontError] = metrics(?hmtx_buf[0], 12, 0, 2, 4, 4);
     if (!sel r.err)                    { ret 1; }
@@ -99,7 +99,7 @@ test "hmtx: glyph out of range rejected" {
     ret 0;
 }
 
-test "hmtx: zero long metrics rejected" {
+test metrics__zero_long_metrics {
     build_hmtx();
     val r: res[HMetrics, FontError] = metrics(?hmtx_buf[0], 12, 0, 0, 4, 0);
     if (!sel r.err)                 { ret 1; }
@@ -107,7 +107,7 @@ test "hmtx: zero long metrics rejected" {
     ret 0;
 }
 
-test "hmtx: truncated bearing array rejected" {
+test hmtx__truncated_bearing_array_rejected {
     build_hmtx();
     # glyph 3's bearing sits at 10..12, past a 10-byte table
     val r: res[HMetrics, FontError] = metrics(?hmtx_buf[0], 10, 0, 2, 4, 3);

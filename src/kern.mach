@@ -183,7 +183,7 @@ fun none_usable() bool {
     ret sel r.err && sel r.err.no_horizontal_kern;
 }
 
-test "kern: select horizontal format 0 subtable" {
+test kern__select_horizontal_format_0_subtable {
     build_kern();
     val r: res[Pairs, FontError] = select_subtable(?kern_buf[0], 64, 0);
     if (!sel r.ok)         { ret 1; }
@@ -192,7 +192,7 @@ test "kern: select horizontal format 0 subtable" {
     ret 0;
 }
 
-test "kern: lookup finds every pair" {
+test lookup__every_pair {
     build_kern();
     val p: Pairs = selected();
     if (!kerns(lookup(?kern_buf[0], 64, p, 1, 2), -80)) { ret 1; }
@@ -202,7 +202,7 @@ test "kern: lookup finds every pair" {
     ret 0;
 }
 
-test "kern: unkerned pair yields zero" {
+test lookup__unkerned_pair_yields_zero {
     build_kern();
     val p: Pairs = selected();
     if (p.count != 4) { ret 1; }
@@ -215,7 +215,7 @@ test "kern: unkerned pair yields zero" {
     ret 0;
 }
 
-test "kern: vertical and cross-stream subtables skipped" {
+test select_subtable__unusable_skipped {
     build_kern();
     w16(?kern_buf[0], 8, 0x0000); # format 0, vertical
     if (!none_usable()) { ret 1; }
@@ -226,14 +226,14 @@ test "kern: vertical and cross-stream subtables skipped" {
     ret 0;
 }
 
-test "kern: unsupported format skipped" {
+test kern__unsupported_format_skipped {
     build_kern();
     w16(?kern_buf[0], 8, 0x0201); # format 2, horizontal
     if (!none_usable()) { ret 1; }
     ret 0;
 }
 
-test "kern: apple 32-bit version rejected" {
+test select_subtable__apple_version {
     build_kern();
     w16(?kern_buf[0], 0, 1); # 0x0001 opens apple's 0x00010000 version
     val r: res[Pairs, FontError] = select_subtable(?kern_buf[0], 64, 0);
@@ -243,7 +243,7 @@ test "kern: apple 32-bit version rejected" {
     ret 0;
 }
 
-test "kern: pair array past the buffer rejected" {
+test select_subtable__pairs_past_buffer {
     build_kern();
     w16(?kern_buf[0], 10, 1000); # nPairs far beyond the buffer
     val r: res[Pairs, FontError] = select_subtable(?kern_buf[0], 64, 0);
@@ -253,7 +253,7 @@ test "kern: pair array past the buffer rejected" {
     ret 0;
 }
 
-test "kern: subtable shorter than its header rejected" {
+test select_subtable__short_subtable_length {
     build_kern();
     w16(?kern_buf[0], 2, 2); # nTables = 2
     w16(?kern_buf[0], 8, 0x0000); # first subtable is vertical, so the walk steps past it
@@ -265,7 +265,7 @@ test "kern: subtable shorter than its header rejected" {
     ret 0;
 }
 
-test "kern: second subtable reached past the first" {
+test select_subtable__second_subtable {
     build_kern();
     w16(?kern_buf[0], 2, 2); # nTables = 2
     w16(?kern_buf[0], 8, 0x0000); # first subtable is vertical

@@ -137,14 +137,14 @@ fun build_dir() {
     put_u32(?dir_buf[0], 40, 48);
 }
 
-test "table: truetype sfnt version accepted" {
+test table__truetype_sfnt_version_accepted {
     build_dir();
     val r: err[FontError] = check_truetype(?dir_buf[0], 44);
     if (!sel r.ok) { ret 1; }
     ret 0;
 }
 
-test "table: OTTO rejected" {
+test check_truetype__otto_rejected {
     build_dir();
     put_u32(?dir_buf[0], 0, 0x4F54544F);
     val r: err[FontError] = check_truetype(?dir_buf[0], 44);
@@ -154,7 +154,7 @@ test "table: OTTO rejected" {
     ret 0;
 }
 
-test "table: num_tables" {
+test table__num_tables {
     build_dir();
     val n: res[u16, FontError] = num_tables(?dir_buf[0], 44);
     if (!sel n.ok) { ret 1; }
@@ -169,7 +169,7 @@ fun found(r: res[opt[Table], FontError]) Table {
     ret r.ok.some;
 }
 
-test "table: find present entries" {
+test find_table__present {
     build_dir();
     val glyf: Table = found(find_table(?dir_buf[0], 44, 'g', 'l', 'y', 'f'));
     if (glyf.offset != 200 || glyf.length != 48) { ret 1; }
@@ -178,7 +178,7 @@ test "table: find present entries" {
     ret 0;
 }
 
-test "table: missing tag" {
+test find_table__missing {
     build_dir();
     val r: res[opt[Table], FontError] = find_table(?dir_buf[0], 44, 'h', 'e', 'a', 'd');
     if (!sel r.ok)      { ret 1; }
@@ -186,7 +186,7 @@ test "table: missing tag" {
     ret 0;
 }
 
-test "table: truncated directory rejected" {
+test table__truncated_directory_rejected {
     build_dir();
     # only the offset table plus one full entry fit, so the second entry's span runs past len.
     val r: res[opt[Table], FontError] = find_table(?dir_buf[0], 28, 'g', 'l', 'y', 'f');

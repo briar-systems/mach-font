@@ -59,7 +59,7 @@ fun w16(buf: *u8, off: usize, v: u16) {
 
 var hhea_buf: [36]u8;
 
-test "hhea: parse fields" {
+test parse_hhea__fields {
     w16(?hhea_buf[0], 4, 0x0708); # ascent = 1800
     w16(?hhea_buf[0], 6, 0xFE0C); # descent = -500
     w16(?hhea_buf[0], 8, 90); # line_gap
@@ -75,7 +75,7 @@ test "hhea: parse fields" {
     ret 0;
 }
 
-test "hhea: truncated rejected" {
+test hhea__truncated_rejected {
     val r: res[Hhea, FontError] = parse_hhea(?hhea_buf[0], 34, 0);
     if (!sel r.err)            { ret 1; }
     if (!sel r.err.truncated)  { ret 2; }

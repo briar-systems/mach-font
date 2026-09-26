@@ -565,7 +565,7 @@ fun done(r: err[FontError]) bool {
     ret sel r.ok;
 }
 
-test "info: init locates every table and reads globals" {
+test init__locates_tables {
     build_font();
     val r: res[Font, FontError] = init(?font_buf[0], 320);
     if (!sel r.ok) { ret 1; }
@@ -585,7 +585,7 @@ test "info: init locates every table and reads globals" {
     ret 0;
 }
 
-test "info: em sizing is independent of the line metrics" {
+test scale_for_em_size__ignores_line_metrics {
     var f: Font;
     f.head.units_per_em = 550;
     f.hhea              = opt[hhea.Hhea].some{hhea.Hhea{ascent: 550, descent: -150, line_gap: 0, advance_width_max: 0, num_h_metrics: 0}};
@@ -596,7 +596,7 @@ test "info: em sizing is independent of the line metrics" {
     ret 0;
 }
 
-test "info: pixel height needs vertical metrics" {
+test scale_for_pixel_height__needs_vertical_metrics {
     var f: Font;
     f.head.units_per_em = 550;
     f.hhea              = opt[hhea.Hhea].none{};
@@ -611,7 +611,7 @@ test "info: pixel height needs vertical metrics" {
     ret 0;
 }
 
-test "info: cmap maps 'A' to glyph 1" {
+test info__cmap_maps_a_to_glyph_1 {
     build_font();
     var f: Font                = opened(?font_buf[0], 320);
     val a: res[u16, FontError] = glyph_index(?f, 0x41);
@@ -624,7 +624,7 @@ test "info: cmap maps 'A' to glyph 1" {
     ret 0;
 }
 
-test "info: glyph_hmetrics via facade" {
+test info__glyph_hmetrics_via_facade {
     build_font();
     var f: Font                          = opened(?font_buf[0], 320);
     val m: res[hmtx.HMetrics, FontError] = glyph_hmetrics(?f, 1);
@@ -633,7 +633,7 @@ test "info: glyph_hmetrics via facade" {
     ret 0;
 }
 
-test "info: outline extraction end to end" {
+test glyph_outline__simple {
     build_font();
     var f: Font = opened(?font_buf[0], 320);
     if (!outlined(glyph_outline(?f, 1, ?e2e_pts[0], 8, ?e2e_ends[0], 4), 1, 3)) { ret 1; }
@@ -653,7 +653,7 @@ fun boxed(r: res[opt[glyf.Bounds], FontError], x0: i16, y0: i16, x1: i16, y1: i1
     ret b.x_min == x0 && b.y_min == y0 && b.x_max == x1 && b.y_max == y1;
 }
 
-test "info: glyph info measures the outline and skips empty glyphs" {
+test glyph_info__measures_outline {
     build_font();
     var f: Font = opened(?font_buf[0], 320);
     if (!boxed(glyph_info(?f, 1, ?e2e_pts[0], 8, ?e2e_ends[0], 4), 100, 100, 300, 400)) { ret 1; }
@@ -666,7 +666,7 @@ test "info: glyph info measures the outline and skips empty glyphs" {
     ret 0;
 }
 
-test "info: a stored box that lies does not move a simple glyph" {
+test info__a_stored_box_that_lies_does_not_move_a_simple_glyph {
     build_font();
     var f: Font = opened(?font_buf[0], 320);
     if (!done(render_glyph(?f, 1, 0.02, ?e2e_pts[0], 8, ?e2e_ends[0], 4, ?e2e_edges[0], 64, ?e2e_bmp[0], 8, 8))) { ret 1; }
@@ -692,7 +692,7 @@ test "info: a stored box that lies does not move a simple glyph" {
 
 var ref_bmp: [80]u8;
 
-test "info: render glyph covers interior, leaves corner empty" {
+test render_glyph__simple {
     build_font();
     var f: Font = opened(?font_buf[0], 320);
     if (!done(render_glyph(?f, 1, 0.02, ?e2e_pts[0], 8, ?e2e_ends[0], 4, ?e2e_edges[0], 64, ?e2e_bmp[0], 8, 8))) { ret 1; }
@@ -703,7 +703,7 @@ test "info: render glyph covers interior, leaves corner empty" {
     ret 0;
 }
 
-test "info: non-truetype rejected" {
+test info__non_truetype_rejected {
     build_font();
     w32(?font_buf[0], 0, 0x4F54544F); # OTTO
     val r: res[Font, FontError] = init(?font_buf[0], 320);
@@ -712,7 +712,7 @@ test "info: non-truetype rejected" {
     ret 0;
 }
 
-test "info: truncated font rejected" {
+test info__truncated_font_rejected {
     build_font();
     # the directory claims 7 tables but only a few bytes are present
     val r: res[Font, FontError] = init(?font_buf[0], 20);
@@ -721,7 +721,7 @@ test "info: truncated font rejected" {
     ret 0;
 }
 
-test "info: missing required table rejected" {
+test init__missing_required_table {
     build_font();
     tag(?font_buf[0], 108, 'm', 'a', 'x', 'q');
     val r: res[Font, FontError] = init(?font_buf[0], 320);
@@ -910,7 +910,7 @@ var dv_ends:  [4]u16;
 var dv_edges: [128]raster.Edge;
 var dv_bmp:   [80]u8;
 
-test "info: composite outline composes its components" {
+test glyph_outline__composite {
     build_dejavu();
     var f: Font = opened(?dv_buf[0], 512);
     if (f.head.units_per_em != 2048) { ret 1; }
@@ -936,7 +936,7 @@ test "info: composite outline composes its components" {
     ret 0;
 }
 
-test "info: nested composite resolves both levels" {
+test glyph_outline__nested_composite {
     build_dejavu();
     var f: Font = opened(?dv_buf[0], 512);
 
@@ -955,7 +955,7 @@ test "info: nested composite resolves both levels" {
     ret 0;
 }
 
-test "info: composite renders both components" {
+test render_glyph__composite {
     build_dejavu();
     var f: Font = opened(?dv_buf[0], 512);
     # 1931 design units of height across 20 rows, and the glyph is under 2 px wide
@@ -970,7 +970,7 @@ test "info: composite renders both components" {
     ret 0;
 }
 
-test "info: composite bounds come from the resolved outline" {
+test info__composite_bounds_come_from_the_resolved_outline {
     build_dejavu();
     var f: Font = opened(?dv_buf[0], 512);
     # dejavu's stored boxes are correct, so the measured box equals them
@@ -981,7 +981,7 @@ test "info: composite bounds come from the resolved outline" {
     ret 0;
 }
 
-test "info: a stale composite box renders at the outline's true extent" {
+test info__a_stale_composite_box_renders_at_the_outline_s_true_extent {
     build_dejavu();
     var f: Font = opened(?dv_buf[0], 512);
     if (!done(render_glyph(?f, 3, 0.01035, ?dv_pts[0], 16, ?dv_ends[0], 4, ?dv_edges[0], 128, ?dv_bmp[0], 4, 20))) { ret 1; }
@@ -1008,7 +1008,7 @@ test "info: a stale composite box renders at the outline's true extent" {
     ret 0;
 }
 
-test "info: composite outline needs room for every component" {
+test glyph_outline__composite_capacity {
     build_dejavu();
     var f: Font = opened(?dv_buf[0], 512);
     # the first component fits exactly, and the second has nowhere to go
@@ -1021,7 +1021,7 @@ test "info: composite outline needs room for every component" {
     ret 0;
 }
 
-test "info: self-referencing composite rejected" {
+test glyph_outline__cyclic_composite_rejected {
     build_dejavu();
     var f: Font = opened(?dv_buf[0], 512);
     # point glyph 3's first component at glyph 3
@@ -1032,7 +1032,7 @@ test "info: self-referencing composite rejected" {
     ret 0;
 }
 
-test "info: mutually recursive composites rejected" {
+test info__mutually_recursive_composites_rejected {
     build_dejavu();
     var f: Font = opened(?dv_buf[0], 512);
     # glyph 5 already references glyph 3, so send glyph 3 back to glyph 5
@@ -1042,7 +1042,7 @@ test "info: mutually recursive composites rejected" {
     ret 0;
 }
 
-test "info: point-matched component rejected" {
+test glyph_outline__point_matched_component_rejected {
     build_dejavu();
     var f: Font = opened(?dv_buf[0], 512);
     # clear ARGS_ARE_XY_VALUES, leaving args that are point indices
@@ -1053,7 +1053,7 @@ test "info: point-matched component rejected" {
     ret 0;
 }
 
-test "info: component out of range rejected" {
+test glyph_outline__component_out_of_range {
     build_dejavu();
     var f: Font = opened(?dv_buf[0], 512);
     w16(?dv_buf[0], DV_G3 + 12, 99);
@@ -1070,7 +1070,7 @@ fun kerned(r: res[i16, FontError], value: i16) bool {
     ret false;
 }
 
-test "info: kern pairs through the facade" {
+test glyph_kern_advance__pairs {
     build_dejavu();
     var f: Font = opened(?dv_buf[0], 512);
     if (!sel f.kern.ok)       { ret 1; }
@@ -1085,7 +1085,7 @@ test "info: kern pairs through the facade" {
     ret 0;
 }
 
-test "info: a font without kerning reports none" {
+test glyph_kern_advance__no_kern_table {
     build_font();
     var f: Font                = opened(?font_buf[0], 320);
     val v: res[i16, FontError] = glyph_kern_advance(?f, 0, 1);
@@ -1095,7 +1095,7 @@ test "info: a font without kerning reports none" {
     ret 0;
 }
 
-test "info: outline maxima size composite buffers" {
+test outline_maxima__size_composite_buffers {
     build_dejavu();
     var f: Font                             = opened(?dv_buf[0], 512);
     val r: res[opt[maxp.Maxima], FontError] = outline_maxima(?f);

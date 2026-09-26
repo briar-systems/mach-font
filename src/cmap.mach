@@ -196,7 +196,7 @@ fun maps(r: res[u16, FontError], glyph: u16) bool {
     ret false;
 }
 
-test "cmap: format 4 idDelta mapping" {
+test lookup__format4 {
     build_f4();
     if (!maps(lookup(?f4[0], 64, 0, 0x41), 3)) { ret 1; }
     if (!maps(lookup(?f4[0], 64, 0, 0x42), 4)) { ret 1; }
@@ -204,13 +204,13 @@ test "cmap: format 4 idDelta mapping" {
     ret 0;
 }
 
-test "cmap: format 4 glyphIdArray mapping" {
+test cmap__format_4_glyphidarray_mapping {
     build_f4();
     if (!maps(lookup(?f4[0], 64, 0, 0x58), 9)) { ret 1; }
     ret 0;
 }
 
-test "cmap: format 4 unmapped yields glyph 0" {
+test cmap__format_4_unmapped_yields_glyph_0 {
     build_f4();
     if (!maps(lookup(?f4[0], 64, 0, 0x44), 0)) { ret 1; }
     # beyond the BMP is unmapped in format 4
@@ -236,7 +236,7 @@ fun build_cmap() {
     }
 }
 
-test "cmap: select subtable and map" {
+test select_subtable__unicode {
     build_cmap();
     val sub: res[usize, FontError] = select_subtable(?cmap_buf[0], 128, 0);
     if (!sel sub.ok)                                       { ret 1; }
@@ -245,7 +245,7 @@ test "cmap: select subtable and map" {
     ret 0;
 }
 
-test "cmap: no unicode subtable rejected" {
+test select_subtable__no_unicode {
     build_cmap();
     w16(?cmap_buf[0], 4, 1); # platformID = macintosh, not unicode
     w16(?cmap_buf[0], 6, 0);
@@ -298,25 +298,25 @@ fun build_f12() {
     w32(p, 36, 20);
 }
 
-test "cmap: format 12 range mapping" {
+test lookup__format12 {
     build_f12();
     if (!maps(lookup(?f12[0], 40, 0, 0x101), 11)) { ret 1; }
     ret 0;
 }
 
-test "cmap: format 12 astral codepoint" {
+test cmap__format_12_astral_codepoint {
     build_f12();
     if (!maps(lookup(?f12[0], 40, 0, 0x1F600), 20)) { ret 1; }
     ret 0;
 }
 
-test "cmap: format 12 unmapped yields glyph 0" {
+test cmap__format_12_unmapped_yields_glyph_0 {
     build_f12();
     if (!maps(lookup(?f12[0], 40, 0, 0x200), 0)) { ret 1; }
     ret 0;
 }
 
-test "cmap: unsupported subtable format rejected" {
+test lookup__unsupported_format {
     build_f12();
     w16(?f12[0], 0, 6);
     val r: res[u16, FontError] = lookup(?f12[0], 40, 0, 0x101);
