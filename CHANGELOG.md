@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-26
+
+### Changed
+- **Breaking: builds against std 9.0.0 and requires mach 6** (#61). `[dep.std]` moves from `^8.0` to `^9.0`, realized to v9.0.0 by the committed `dep/std` gitlink, and `[project].mach` rises from `^5.12` to `^6`, which std 9 requires. Resolution is flat, so a consumer of mach-font must move to std 9 and mach 6 with it. No library source changed.
+- test: tests are named with identifiers (`test subject__case`), as mach 6 requires, and pruned to the mach 6 test policy, from 106 to 71 (#61). Cases that only repeated the bounds-checked readers in `read.mach` or trivial delegation are dropped, near-duplicates fold into one test per subject, and every fixture and helper is `#[testing]`.
+- ci: the lib job seeds mach v6.0.0 until the family pin moves (briar-systems/.github#103) (#61).
+
 ## [0.8.1] - 2026-09-25
 
 ### Changed

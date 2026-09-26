@@ -72,13 +72,16 @@ pub fun parse_head(data: *u8, len: usize, off: usize) res[Head, FontError] {
     }};
 }
 
+#[testing]
 fun w16(buf: *u8, off: usize, v: u16) {
     buf[off]     = (v >> 8)::u8;
     buf[off + 1] = (v & 0xFF)::u8;
 }
 
+#[testing]
 var head_buf: [54]u8;
 
+#[testing]
 fun build_head() {
     # magic at +12
     head_buf[12] = 0x5F;
@@ -94,7 +97,7 @@ fun build_head() {
     w16(?head_buf[0], 50, 1); # index_to_loc_format = long
 }
 
-test "head: parse fields" {
+test parse_head__fields {
     build_head();
     val r: res[Head, FontError] = parse_head(?head_buf[0], 54, 0);
     if (!sel r.ok)                               { ret 1; }
@@ -106,7 +109,7 @@ test "head: parse fields" {
     ret 0;
 }
 
-test "head: bad magic rejected" {
+test parse_head__bad_magic {
     build_head();
     head_buf[12] = 0;
     val r: res[Head, FontError] = parse_head(?head_buf[0], 54, 0);
@@ -116,16 +119,7 @@ test "head: bad magic rejected" {
     ret 0;
 }
 
-test "head: truncated rejected" {
-    build_head();
-    val r: res[Head, FontError] = parse_head(?head_buf[0], 40, 0);
-    if (!sel r.err)            { ret 1; }
-    if (!sel r.err.truncated)  { ret 2; }
-    if (r.err.truncated != 40) { ret 3; }
-    ret 0;
-}
-
-test "head: zero units per em rejected" {
+test parse_head__zero_units_per_em {
     build_head();
     w16(?head_buf[0], 18, 0);
     val r: res[Head, FontError] = parse_head(?head_buf[0], 54, 0);

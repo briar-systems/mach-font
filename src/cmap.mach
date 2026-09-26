@@ -145,11 +145,13 @@ fun segment_4(data: *u8, len: usize, i: usize, start_base: usize, delta_base: us
     ret res[u16, FontError].ok{(raw.ok::u32 + delta)::u16};
 }
 
+#[testing]
 fun w16(buf: *u8, off: usize, v: u16) {
     buf[off]     = (v >> 8)::u8;
     buf[off + 1] = (v & 0xFF)::u8;
 }
 
+#[testing]
 fun w32(buf: *u8, off: usize, v: u32) {
     buf[off]     = (v >> 24)::u8;
     buf[off + 1] = ((v >> 16) & 0xFF)::u8;
@@ -158,8 +160,10 @@ fun w32(buf: *u8, off: usize, v: u32) {
 }
 
 # a format 4 subtable: A-C contiguous via idDelta, X via glyphIdArray
+#[testing]
 var f4: [64]u8;
 
+#[testing]
 fun build_f4() {
     val p: *u8 = ?f4[0];
     w16(p, 0, 4); # format
@@ -191,36 +195,30 @@ fun build_f4() {
 }
 
 # test whether a lookup succeeded with exactly this glyph
+#[testing]
 fun maps(r: res[u16, FontError], glyph: u16) bool {
     if (sel r.ok) { ret r.ok == glyph; }
     ret false;
 }
 
-test "cmap: format 4 idDelta mapping" {
+test lookup__format4 {
     build_f4();
+    # a contiguous run through idDelta
     if (!maps(lookup(?f4[0], 64, 0, 0x41), 3)) { ret 1; }
-    if (!maps(lookup(?f4[0], 64, 0, 0x42), 4)) { ret 1; }
-    if (!maps(lookup(?f4[0], 64, 0, 0x43), 5)) { ret 1; }
-    ret 0;
-}
-
-test "cmap: format 4 glyphIdArray mapping" {
-    build_f4();
-    if (!maps(lookup(?f4[0], 64, 0, 0x58), 9)) { ret 1; }
-    ret 0;
-}
-
-test "cmap: format 4 unmapped yields glyph 0" {
-    build_f4();
-    if (!maps(lookup(?f4[0], 64, 0, 0x44), 0)) { ret 1; }
-    # beyond the BMP is unmapped in format 4
-    if (!maps(lookup(?f4[0], 64, 0, 0x10000), 0)) { ret 1; }
+    if (!maps(lookup(?f4[0], 64, 0, 0x43), 5)) { ret 2; }
+    # a segment mapped through glyphIdArray
+    if (!maps(lookup(?f4[0], 64, 0, 0x58), 9)) { ret 3; }
+    # a gap between segments and anything past the BMP yield glyph 0
+    if (!maps(lookup(?f4[0], 64, 0, 0x44), 0))    { ret 4; }
+    if (!maps(lookup(?f4[0], 64, 0, 0x10000), 0)) { ret 5; }
     ret 0;
 }
 
 # a format 4 subtable wrapped in a cmap table with one encoding record
+#[testing]
 var cmap_buf: [128]u8;
 
+#[testing]
 fun build_cmap() {
     val p: *u8 = ?cmap_buf[0];
     w16(p, 0, 0); # version
@@ -236,7 +234,7 @@ fun build_cmap() {
     }
 }
 
-test "cmap: select subtable and map" {
+test select_subtable__unicode {
     build_cmap();
     val sub: res[usize, FontError] = select_subtable(?cmap_buf[0], 128, 0);
     if (!sel sub.ok)                                       { ret 1; }
@@ -245,7 +243,7 @@ test "cmap: select subtable and map" {
     ret 0;
 }
 
-test "cmap: no unicode subtable rejected" {
+test select_subtable__no_unicode {
     build_cmap();
     w16(?cmap_buf[0], 4, 1); # platformID = macintosh, not unicode
     w16(?cmap_buf[0], 6, 0);
@@ -279,8 +277,10 @@ fun lookup_12(data: *u8, len: usize, sub_off: usize, codepoint: u32) res[u16, Fo
 }
 
 # two groups: a BMP range and a single astral codepoint
+#[testing]
 var f12: [40]u8;
 
+#[testing]
 fun build_f12() {
     val p: *u8 = ?f12[0];
     w16(p, 0, 12); # format
@@ -298,25 +298,15 @@ fun build_f12() {
     w32(p, 36, 20);
 }
 
-test "cmap: format 12 range mapping" {
+test lookup__format12 {
     build_f12();
-    if (!maps(lookup(?f12[0], 40, 0, 0x101), 11)) { ret 1; }
+    if (!maps(lookup(?f12[0], 40, 0, 0x101), 11))   { ret 1; }
+    if (!maps(lookup(?f12[0], 40, 0, 0x1F600), 20)) { ret 2; }
+    if (!maps(lookup(?f12[0], 40, 0, 0x200), 0))    { ret 3; }
     ret 0;
 }
 
-test "cmap: format 12 astral codepoint" {
-    build_f12();
-    if (!maps(lookup(?f12[0], 40, 0, 0x1F600), 20)) { ret 1; }
-    ret 0;
-}
-
-test "cmap: format 12 unmapped yields glyph 0" {
-    build_f12();
-    if (!maps(lookup(?f12[0], 40, 0, 0x200), 0)) { ret 1; }
-    ret 0;
-}
-
-test "cmap: unsupported subtable format rejected" {
+test lookup__unsupported_format {
     build_f12();
     w16(?f12[0], 0, 6);
     val r: res[u16, FontError] = lookup(?f12[0], 40, 0, 0x101);

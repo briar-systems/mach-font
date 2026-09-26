@@ -55,14 +55,17 @@ pub fun metrics(data: *u8, len: usize, off: usize, num_h_metrics: u16, num_glyph
     ret res[HMetrics, FontError].ok{HMetrics{advance: advance.ok, lsb: lsb.ok}};
 }
 
+#[testing]
 fun w16(buf: *u8, off: usize, v: u16) {
     buf[off]     = (v >> 8)::u8;
     buf[off + 1] = (v & 0xFF)::u8;
 }
 
 # 2 long metrics then 2 trailing bearings, for a 4-glyph font
+#[testing]
 var hmtx_buf: [12]u8;
 
+#[testing]
 fun build_hmtx() {
     w16(?hmtx_buf[0], 0, 600); # glyph 0 advance
     w16(?hmtx_buf[0], 2, 30); # glyph 0 lsb
@@ -72,7 +75,7 @@ fun build_hmtx() {
     w16(?hmtx_buf[0], 10, 60); # glyph 3 lsb
 }
 
-test "hmtx: long metric" {
+test metrics__long_metric {
     build_hmtx();
     val r: res[HMetrics, FontError] = metrics(?hmtx_buf[0], 12, 0, 2, 4, 1);
     if (!sel r.ok)           { ret 1; }
@@ -81,7 +84,7 @@ test "hmtx: long metric" {
     ret 0;
 }
 
-test "hmtx: trailing glyph shares last advance" {
+test metrics__trailing_glyph_shares_last_advance {
     build_hmtx();
     val r: res[HMetrics, FontError] = metrics(?hmtx_buf[0], 12, 0, 2, 4, 3);
     if (!sel r.ok)           { ret 1; }
@@ -90,7 +93,7 @@ test "hmtx: trailing glyph shares last advance" {
     ret 0;
 }
 
-test "hmtx: glyph out of range rejected" {
+test metrics__glyph_out_of_range {
     build_hmtx();
     val r: res[HMetrics, FontError] = metrics(?hmtx_buf[0], 12, 0, 2, 4, 4);
     if (!sel r.err)                    { ret 1; }
@@ -99,20 +102,10 @@ test "hmtx: glyph out of range rejected" {
     ret 0;
 }
 
-test "hmtx: zero long metrics rejected" {
+test metrics__zero_long_metrics {
     build_hmtx();
     val r: res[HMetrics, FontError] = metrics(?hmtx_buf[0], 12, 0, 0, 4, 0);
     if (!sel r.err)                 { ret 1; }
     if (!sel r.err.no_long_metrics) { ret 2; }
-    ret 0;
-}
-
-test "hmtx: truncated bearing array rejected" {
-    build_hmtx();
-    # glyph 3's bearing sits at 10..12, past a 10-byte table
-    val r: res[HMetrics, FontError] = metrics(?hmtx_buf[0], 10, 0, 2, 4, 3);
-    if (!sel r.err)            { ret 1; }
-    if (!sel r.err.truncated)  { ret 2; }
-    if (r.err.truncated != 10) { ret 3; }
     ret 0;
 }
