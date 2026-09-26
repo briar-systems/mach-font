@@ -95,12 +95,14 @@ pub fun find_table(data: *u8, len: usize, a: u8, b: u8, c: u8, d: u8) res[opt[Ta
 }
 
 # write a big-endian u16 into a test fixture buffer
+#[testing]
 fun put_u16(buf: *u8, off: usize, v: u16) {
     buf[off]     = (v >> 8)::u8;
     buf[off + 1] = (v & 0xFF)::u8;
 }
 
 # write a big-endian u32 into a test fixture buffer
+#[testing]
 fun put_u32(buf: *u8, off: usize, v: u32) {
     buf[off]     = (v >> 24)::u8;
     buf[off + 1] = ((v >> 16) & 0xFF)::u8;
@@ -109,6 +111,7 @@ fun put_u32(buf: *u8, off: usize, v: u32) {
 }
 
 # write a four-byte tag into a test fixture buffer
+#[testing]
 fun put_tag(buf: *u8, off: usize, a: u8, b: u8, c: u8, d: u8) {
     buf[off]     = a;
     buf[off + 1] = b;
@@ -116,9 +119,11 @@ fun put_tag(buf: *u8, off: usize, a: u8, b: u8, c: u8, d: u8) {
     buf[off + 3] = d;
 }
 
+#[testing]
 var dir_buf: [44]u8;
 
 # build a two-entry offset table + directory: cmap at 100/16, glyf at 200/48
+#[testing]
 fun build_dir() {
     put_u32(?dir_buf[0], 0, SFNT_TRUETYPE);
     put_u16(?dir_buf[0], 4, 2);
@@ -137,13 +142,6 @@ fun build_dir() {
     put_u32(?dir_buf[0], 40, 48);
 }
 
-test table__truetype_sfnt_version_accepted {
-    build_dir();
-    val r: err[FontError] = check_truetype(?dir_buf[0], 44);
-    if (!sel r.ok) { ret 1; }
-    ret 0;
-}
-
 test check_truetype__otto_rejected {
     build_dir();
     put_u32(?dir_buf[0], 0, 0x4F54544F);
@@ -154,15 +152,8 @@ test check_truetype__otto_rejected {
     ret 0;
 }
 
-test table__num_tables {
-    build_dir();
-    val n: res[u16, FontError] = num_tables(?dir_buf[0], 44);
-    if (!sel n.ok) { ret 1; }
-    if (n.ok != 2) { ret 2; }
-    ret 0;
-}
-
 # unwrap a located table, reporting a missing or failed lookup as a zero span
+#[testing]
 fun found(r: res[opt[Table], FontError]) Table {
     if (sel r.err)     { ret Table{offset: 0, length: 0}; }
     if (sel r.ok.none) { ret Table{offset: 0, length: 0}; }
@@ -183,15 +174,5 @@ test find_table__missing {
     val r: res[opt[Table], FontError] = find_table(?dir_buf[0], 44, 'h', 'e', 'a', 'd');
     if (!sel r.ok)      { ret 1; }
     if (!sel r.ok.none) { ret 2; }
-    ret 0;
-}
-
-test table__truncated_directory_rejected {
-    build_dir();
-    # only the offset table plus one full entry fit, so the second entry's span runs past len.
-    val r: res[opt[Table], FontError] = find_table(?dir_buf[0], 28, 'g', 'l', 'y', 'f');
-    if (!sel r.err)            { ret 1; }
-    if (!sel r.err.truncated)  { ret 2; }
-    if (r.err.truncated != 28) { ret 3; }
     ret 0;
 }

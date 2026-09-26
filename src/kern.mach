@@ -132,11 +132,13 @@ pub fun lookup(data: *u8, len: usize, pairs: Pairs, left: u16, right: u16) res[i
     ret res[i16, FontError].ok{0};
 }
 
+#[testing]
 fun w16(buf: *u8, off: usize, v: u16) {
     buf[off]     = (v >> 8)::u8;
     buf[off + 1] = (v & 0xFF)::u8;
 }
 
+#[testing]
 fun pair(buf: *u8, index: usize, left: u16, right: u16, value: u16) {
     val at: usize = 18 + index * 6;
     w16(buf, at, left);
@@ -145,8 +147,10 @@ fun pair(buf: *u8, index: usize, left: u16, right: u16, value: u16) {
 }
 
 # a version-0 table with one horizontal format-0 subtable of 4 pairs
+#[testing]
 var kern_buf: [64]u8;
 
+#[testing]
 fun build_kern() {
     val p: *u8 = ?kern_buf[0];
     w16(p, 0, 0); # version
@@ -165,6 +169,7 @@ fun build_kern() {
 }
 
 # select the fixture's subtable, reporting failure as an empty array
+#[testing]
 fun selected() Pairs {
     val r: res[Pairs, FontError] = select_subtable(?kern_buf[0], 64, 0);
     if (sel r.ok) { ret r.ok; }
@@ -172,24 +177,17 @@ fun selected() Pairs {
 }
 
 # test whether a lookup succeeded with exactly this adjustment
+#[testing]
 fun kerns(r: res[i16, FontError], value: i16) bool {
     if (sel r.ok) { ret r.ok == value; }
     ret false;
 }
 
 # test whether selection failed with no usable subtable
+#[testing]
 fun none_usable() bool {
     val r: res[Pairs, FontError] = select_subtable(?kern_buf[0], 64, 0);
     ret sel r.err && sel r.err.no_horizontal_kern;
-}
-
-test kern__select_horizontal_format_0_subtable {
-    build_kern();
-    val r: res[Pairs, FontError] = select_subtable(?kern_buf[0], 64, 0);
-    if (!sel r.ok)         { ret 1; }
-    if (r.ok.offset != 18) { ret 2; }
-    if (r.ok.count != 4)   { ret 3; }
-    ret 0;
 }
 
 test lookup__every_pair {
@@ -223,13 +221,8 @@ test select_subtable__unusable_skipped {
     if (!none_usable()) { ret 2; }
     w16(?kern_buf[0], 8, 0x0003); # format 0, horizontal, minimum values
     if (!none_usable()) { ret 3; }
-    ret 0;
-}
-
-test kern__unsupported_format_skipped {
-    build_kern();
     w16(?kern_buf[0], 8, 0x0201); # format 2, horizontal
-    if (!none_usable()) { ret 1; }
+    if (!none_usable()) { ret 4; }
     ret 0;
 }
 

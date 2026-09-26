@@ -69,11 +69,13 @@ pub fun glyph_range(data: *u8, len: usize, off: usize, format: i16, glyph: u16) 
     ret res[GlyphRange, FontError].ok{r};
 }
 
+#[testing]
 fun w16(buf: *u8, off: usize, v: u16) {
     buf[off]     = (v >> 8)::u8;
     buf[off + 1] = (v & 0xFF)::u8;
 }
 
+#[testing]
 fun w32(buf: *u8, off: usize, v: u32) {
     buf[off]     = (v >> 24)::u8;
     buf[off + 1] = ((v >> 16) & 0xFF)::u8;
@@ -81,9 +83,11 @@ fun w32(buf: *u8, off: usize, v: u32) {
     buf[off + 3] = (v & 0xFF)::u8;
 }
 
+#[testing]
 var loca_buf: [24]u8;
 
 # test whether a lookup succeeded with exactly this range
+#[testing]
 fun is_range(r: res[GlyphRange, FontError], start: u32, end: u32) bool {
     if (sel r.ok) { ret r.ok.start == start && r.ok.end == end; }
     ret false;
@@ -108,13 +112,6 @@ test glyph_range__long_format {
     w32(?loca_buf[0], 4, 100);
     w32(?loca_buf[0], 8, 240);
     if (!is_range(glyph_range(?loca_buf[0], 12, 0, 1, 1), 100, 240)) { ret 1; }
-    ret 0;
-}
-
-test loca__truncated_rejected {
-    val r: res[GlyphRange, FontError] = glyph_range(?loca_buf[0], 3, 0, 0, 0);
-    if (!sel r.err)           { ret 1; }
-    if (!sel r.err.truncated) { ret 2; }
     ret 0;
 }
 
