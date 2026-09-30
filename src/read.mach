@@ -7,8 +7,6 @@
 
 use font.error.FontError;
 use std.types.bool.bool;
-use std.types.bool.false;
-use std.types.bool.true;
 use std.types.result.res;
 use std.types.size.usize;
 
