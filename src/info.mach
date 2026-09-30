@@ -542,13 +542,13 @@ fun build_font() {
 }
 
 #[testing]
-var e2e_pts: [8]glyf.Point;
+var e2e_pts:   [8]glyf.Point;
 #[testing]
-var e2e_ends: [4]u16;
+var e2e_ends:  [4]u16;
 #[testing]
 var e2e_edges: [64]raster.Edge;
 #[testing]
-var e2e_bmp: [64]u8;
+var e2e_bmp:   [64]u8;
 
 # prepare a fixture font, reporting failure as a zeroed handle
 #[testing]
@@ -877,13 +877,13 @@ fun build_dejavu() {
 }
 
 #[testing]
-var dv_pts: [16]glyf.Point;
+var dv_pts:   [16]glyf.Point;
 #[testing]
-var dv_ends: [4]u16;
+var dv_ends:  [4]u16;
 #[testing]
 var dv_edges: [128]raster.Edge;
 #[testing]
-var dv_bmp: [80]u8;
+var dv_bmp:   [80]u8;
 
 test glyph_outline__composite {
     build_dejavu();
