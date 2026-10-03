@@ -16,8 +16,12 @@ use font.info;
 use font.kern;
 use font.loca;
 use font.maxp;
+use font.name;
+use font.os2;
+use font.post;
 use font.raster;
 use font.read;
+use font.subset;
 use font.table;
 # links the startup entrypoint so `mach test` over this library produces a binary.
 use std.runtime;
@@ -76,6 +80,16 @@ fwd KernPairs:            kern.Pairs;
 fwd kern_select_subtable: kern.select_subtable;
 fwd kern_lookup:          kern.lookup;
 
+fwd post.Post;
+fwd post.parse_post;
+fwd os2.Os2;
+fwd os2.parse_os2;
+fwd name.POSTSCRIPT_NAME_MAX;
+
+fwd subset.closure;
+fwd subset.subset_size;
+fwd subset.write_subset;
+
 fwd raster.Edge;
 fwd raster.flatten;
 fwd raster.fill;
@@ -85,6 +99,9 @@ fwd info.init;
 fwd info.glyph_hmetrics;
 fwd info.glyph_kern_advance;
 fwd info.glyph_index;
+fwd info.post_info;
+fwd info.os2_info;
+fwd info.postscript_name;
 fwd info.glyph_outline;
 fwd info.glyph_info;
 fwd info.outline_maxima;

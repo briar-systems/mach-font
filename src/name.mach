@@ -1,0 +1,185 @@
+# the naming table
+#
+# `name` holds the face's strings as records keyed by platform, encoding,
+# language and name id, each pointing into a shared string store. this module
+# reads the postscript name, id 6, which a document format names an embedded
+# face by. the specification limits it to 63 printable ascii characters other
+# than [](){}<>/%, and stores it as utf-16be on the unicode and windows
+# platforms and as single bytes on the macintosh platform. all reads are
+# bounds-checked through font.read.
+
+use font.error.FontError;
+use font.read;
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.option.opt;
+use std.types.result.res;
+use std.types.size.usize;
+
+# the longest postscript name the specification allows
+pub val POSTSCRIPT_NAME_MAX: usize = 63;
+
+val POSTSCRIPT_NAME_ID: u16   = 6;
+val RECORD_SIZE:        usize = 12;
+
+val PLATFORM_UNICODE:   u16 = 0;
+val PLATFORM_MACINTOSH: u16 = 1;
+val PLATFORM_WINDOWS:   u16 = 3;
+
+# whether a character may appear in a postscript name
+fun allowed(c: u16) bool {
+    if (c < 33 || c > 126) { ret false; }
+    ret c != '[' && c != ']' && c != '(' && c != ')' && c != '{' && c != '}' && c != '<' && c != '>' && c != '/' && c != '%';
+}
+
+# how much a record is preferred for the postscript name, 0 for not at all
+fun rank(platform: u16, encoding: u16) u8 {
+    if (platform == PLATFORM_WINDOWS && encoding == 1)   { ret 3; }
+    if (platform == PLATFORM_UNICODE)                    { ret 2; }
+    if (platform == PLATFORM_MACINTOSH && encoding == 0) { ret 1; }
+    ret 0;
+}
+
+# copy the font's postscript name into buf
+#
+# a windows unicode record is preferred, then a unicode platform record, then a
+# macintosh roman one. a name with a character the specification does not allow
+# is reported rather than altered.
+# ---
+# data: pointer to the first byte of the file
+# len:  number of bytes addressable through data
+# off:  byte offset of the name table
+# buf:  receives the name's ascii bytes
+# cap:  capacity of buf, POSTSCRIPT_NAME_MAX admits every valid name
+# ret:  the name's length, none when the table holds no usable record, or
+#       name_character with the first character not allowed, name_full or
+#       truncated
+pub fun postscript_name(data: *u8, len: usize, off: usize, buf: *u8, cap: usize) res[opt[usize], FontError] {
+    val count: res[u16, FontError] = read.read_u16(data, len, off + 2);
+    if (sel count.err) { ret res[opt[usize], FontError].err{count.err}; }
+    val store: res[u16, FontError] = read.read_u16(data, len, off + 4);
+    if (sel store.err) { ret res[opt[usize], FontError].err{store.err}; }
+
+    var best:    u8    = 0;
+    var best_at: usize = 0;
+    var i:       usize = 0;
+    for (i < count.ok::usize) {
+        val at:       usize               = off + 6 + i * RECORD_SIZE;
+        val platform: res[u16, FontError] = read.read_u16(data, len, at);
+        if (sel platform.err) { ret res[opt[usize], FontError].err{platform.err}; }
+        val encoding: res[u16, FontError] = read.read_u16(data, len, at + 2);
+        if (sel encoding.err) { ret res[opt[usize], FontError].err{encoding.err}; }
+        val id: res[u16, FontError] = read.read_u16(data, len, at + 6);
+        if (sel id.err) { ret res[opt[usize], FontError].err{id.err}; }
+        if (id.ok == POSTSCRIPT_NAME_ID) {
+            val r: u8 = rank(platform.ok, encoding.ok);
+            if (r > best) {
+                best    = r;
+                best_at = at;
+            }
+        }
+        i = i + 1;
+    }
+    if (best == 0) { ret res[opt[usize], FontError].ok{opt[usize].none{}}; }
+
+    val length: res[u16, FontError] = read.read_u16(data, len, best_at + 8);
+    if (sel length.err) { ret res[opt[usize], FontError].err{length.err}; }
+    val start: res[u16, FontError] = read.read_u16(data, len, best_at + 10);
+    if (sel start.err) { ret res[opt[usize], FontError].err{start.err}; }
+    val wide: bool  = best > 1;
+    var step: usize = 1;
+    if (wide) { step = 2; }
+    val from:  usize = off + store.ok::usize + start.ok::usize;
+    val chars: usize = length.ok::usize / step;
+    if (chars > cap) { ret res[opt[usize], FontError].err{FontError.name_full{}}; }
+    var n: usize = 0;
+    for (n < chars) {
+        var c: u16 = 0;
+        if (wide) {
+            val unit: res[u16, FontError] = read.read_u16(data, len, from + n * 2);
+            if (sel unit.err) { ret res[opt[usize], FontError].err{unit.err}; }
+            c = unit.ok;
+        }
+        or {
+            val byte: res[u8, FontError] = read.read_u8(data, len, from + n);
+            if (sel byte.err) { ret res[opt[usize], FontError].err{byte.err}; }
+            c = byte.ok::u16;
+        }
+        if (!allowed(c)) { ret res[opt[usize], FontError].err{FontError.name_character{c}}; }
+        buf[n] = c::u8;
+        n      = n + 1;
+    }
+    ret res[opt[usize], FontError].ok{opt[usize].some{chars}};
+}
+
+#[testing]
+fun w16(buf: *u8, off: usize, v: u16) {
+    buf[off]     = (v >> 8)::u8;
+    buf[off + 1] = (v & 0xFF)::u8;
+}
+
+# two id 6 records: macintosh roman "Mac" at store 0, windows unicode "Win-B"
+# at store 3, and an id 1 record that must be ignored
+#[testing]
+var name_buf: [64]u8;
+
+#[testing]
+fun build_name() {
+    val p: *u8 = ?name_buf[0];
+    w16(p, 0, 0);
+    w16(p, 2, 3);
+    w16(p, 4, 42); # string store after 3 records
+    w16(p, 6, 1); # macintosh roman, id 6
+    w16(p, 8, 0);
+    w16(p, 10, 0);
+    w16(p, 12, 6);
+    w16(p, 14, 3);
+    w16(p, 16, 0);
+    w16(p, 18, 3); # windows unicode, id 1
+    w16(p, 20, 1);
+    w16(p, 22, 0x409);
+    w16(p, 24, 1);
+    w16(p, 26, 2);
+    w16(p, 28, 0);
+    w16(p, 30, 3); # windows unicode, id 6
+    w16(p, 32, 1);
+    w16(p, 34, 0x409);
+    w16(p, 36, 6);
+    w16(p, 38, 10);
+    w16(p, 40, 3);
+    name_buf[42] = 'M';
+    name_buf[43] = 'a';
+    name_buf[44] = 'c';
+    w16(p, 45, 'W');
+    w16(p, 47, 'i');
+    w16(p, 49, 'n');
+    w16(p, 51, '-');
+    w16(p, 53, 'B');
+}
+
+test postscript_name__prefers_windows_unicode {
+    build_name();
+    var out: [8]u8;
+    val r:   res[opt[usize], FontError] = postscript_name(?name_buf[0], 64, 0, ?out[0], 8);
+    if (!sel r.ok)                                       { ret 1; }
+    if (!sel r.ok.some)                                  { ret 1; }
+    if (r.ok.some != 5)                                  { ret 2; }
+    if (out[0] != 'W' || out[3] != '-' || out[4] != 'B') { ret 3; }
+    val small: res[opt[usize], FontError] = postscript_name(?name_buf[0], 64, 0, ?out[0], 4);
+    if (!(sel small.err && sel small.err.name_full)) { ret 4; }
+    w16(?name_buf[0], 51, ' ');
+    val space: res[opt[usize], FontError] = postscript_name(?name_buf[0], 64, 0, ?out[0], 8);
+    if (!sel space.err)                  { ret 5; }
+    if (!sel space.err.name_character)   { ret 5; }
+    if (space.err.name_character != ' ') { ret 5; }
+    # without the windows record the macintosh one is read
+    w16(?name_buf[0], 36, 2);
+    val mac: res[opt[usize], FontError] = postscript_name(?name_buf[0], 64, 0, ?out[0], 8);
+    if (!sel mac.ok)                       { ret 6; }
+    if (!sel mac.ok.some)                  { ret 6; }
+    if (mac.ok.some != 3 || out[0] != 'M') { ret 6; }
+    w16(?name_buf[0], 12, 2);
+    val none: res[opt[usize], FontError] = postscript_name(?name_buf[0], 64, 0, ?out[0], 8);
+    if (!(sel none.ok && sel none.ok.none)) { ret 7; }
+    ret 0;
+}

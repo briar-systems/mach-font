@@ -263,13 +263,13 @@ pub fun fill(edges: *Edge, count: usize, bitmap: *u8, width: u16, height: u16) {
 }
 
 #[testing]
-var sq_pts: [4]glyf.Point;
+var sq_pts:   [4]glyf.Point;
 #[testing]
-var sq_ends: [1]u16;
+var sq_ends:  [1]u16;
 #[testing]
 var sq_edges: [64]Edge;
 #[testing]
-var sq_bmp: [64]u8;
+var sq_bmp:   [64]u8;
 
 # an axis-aligned square contour, all on-curve, in font units
 #[testing]

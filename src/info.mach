@@ -17,6 +17,9 @@ use font.hmtx;
 use font.kern;
 use font.loca;
 use font.maxp;
+use font.name;
+use font.os2;
+use font.post;
 use font.raster;
 use font.read;
 use font.table;
@@ -41,6 +44,9 @@ use std.types.size.usize;
 # glyf_off:   byte offset of the glyf table, none when absent
 # cmap:       absolute offset of the selected unicode cmap subtable, or why none was selected
 # kern:       the selected horizontal format-0 kern pairs, or why none were selected
+# post_off:   byte offset of the post table, none when absent
+# os2_off:    byte offset of the OS/2 table, none when absent
+# name_off:   byte offset of the name table, none when absent
 pub rec Font {
     data:       *u8;
     len:        usize;
@@ -53,6 +59,9 @@ pub rec Font {
     glyf_off:   opt[usize];
     cmap:       res[usize, FontError];
     kern:       res[kern.Pairs, FontError];
+    post_off:   opt[usize];
+    os2_off:    opt[usize];
+    name_off:   opt[usize];
 }
 
 # locate a table and return its byte offset, none when the directory lacks it
@@ -67,9 +76,9 @@ fun locate(data: *u8, len: usize, a: u8, b: u8, c: u8, d: u8) res[opt[usize], Fo
 #
 # validates the sfnt version, locates the standard tables, and reads the global
 # scalars from head, maxp, and hhea. head and maxp are required. hhea, hmtx, loca,
-# glyf, cmap and kern are optional. a cmap or kern table whose subtable cannot be
-# selected leaves the font valid, with the reason kept for glyph_index or
-# glyph_kern_advance to report.
+# glyf, cmap, kern, post, OS/2 and name are optional. a cmap or kern table whose
+# subtable cannot be selected leaves the font valid, with the reason kept for
+# glyph_index or glyph_kern_advance to report.
 # ---
 # data: pointer to the first byte of the font file
 # len:  number of bytes addressable through data
@@ -95,6 +104,12 @@ pub fun init(data: *u8, len: usize) res[Font, FontError] {
     if (sel cmap_at.err) { ret res[Font, FontError].err{cmap_at.err}; }
     val kern_at: res[opt[usize], FontError] = locate(data, len, 'k', 'e', 'r', 'n');
     if (sel kern_at.err) { ret res[Font, FontError].err{kern_at.err}; }
+    val post_at: res[opt[usize], FontError] = locate(data, len, 'p', 'o', 's', 't');
+    if (sel post_at.err) { ret res[Font, FontError].err{post_at.err}; }
+    val os2_at: res[opt[usize], FontError] = locate(data, len, 'O', 'S', '/', '2');
+    if (sel os2_at.err) { ret res[Font, FontError].err{os2_at.err}; }
+    val name_at: res[opt[usize], FontError] = locate(data, len, 'n', 'a', 'm', 'e');
+    if (sel name_at.err) { ret res[Font, FontError].err{name_at.err}; }
 
     if (!sel head_at.ok.some) { ret res[Font, FontError].err{FontError.missing_table{TableId.head{}}}; }
     if (!sel maxp_at.ok.some) { ret res[Font, FontError].err{FontError.missing_table{TableId.maxp{}}}; }
@@ -106,6 +121,9 @@ pub fun init(data: *u8, len: usize) res[Font, FontError] {
     f.hmtx_off = hmtx_at.ok;
     f.loca_off = loca_at.ok;
     f.glyf_off = glyf_at.ok;
+    f.post_off = post_at.ok;
+    f.os2_off  = os2_at.ok;
+    f.name_off = name_at.ok;
 
     val h: res[head.Head, FontError] = head.parse_head(data, len, head_at.ok.some);
     if (sel h.err) { ret res[Font, FontError].err{h.err}; }
@@ -165,6 +183,42 @@ pub fun glyph_hmetrics(f: *Font, glyph: u16) res[hmtx.HMetrics, FontError] {
 pub fun glyph_kern_advance(f: *Font, left: u16, right: u16) res[i16, FontError] {
     if (sel f.kern.err) { ret res[i16, FontError].err{f.kern.err}; }
     ret kern.lookup(f.data, f.len, f.kern.ok, left, right);
+}
+
+# read the face description in the post table
+# ---
+# f:   prepared font handle
+# ret: the fields, none when the font has no post table, or truncated
+pub fun post_info(f: *Font) res[opt[post.Post], FontError] {
+    if (!sel f.post_off.some) { ret res[opt[post.Post], FontError].ok{opt[post.Post].none{}}; }
+    val t: res[post.Post, FontError] = post.parse_post(f.data, f.len, f.post_off.some);
+    if (sel t.err) { ret res[opt[post.Post], FontError].err{t.err}; }
+    ret res[opt[post.Post], FontError].ok{opt[post.Post].some{t.ok}};
+}
+
+# read the face description in the OS/2 table
+# ---
+# f:   prepared font handle
+# ret: the fields, none when the font has no OS/2 table, or truncated
+pub fun os2_info(f: *Font) res[opt[os2.Os2], FontError] {
+    if (!sel f.os2_off.some) { ret res[opt[os2.Os2], FontError].ok{opt[os2.Os2].none{}}; }
+    val t: res[os2.Os2, FontError] = os2.parse_os2(f.data, f.len, f.os2_off.some);
+    if (sel t.err) { ret res[opt[os2.Os2], FontError].err{t.err}; }
+    ret res[opt[os2.Os2], FontError].ok{opt[os2.Os2].some{t.ok}};
+}
+
+# copy the font's postscript name into buf
+#
+# a convenience over font.name using the handle's name table offset.
+# ---
+# f:   prepared font handle
+# buf: receives the name's ascii bytes
+# cap: capacity of buf, name.POSTSCRIPT_NAME_MAX admits every valid name
+# ret: the name's length, none when the font has no name table or no usable
+#      postscript name record, or name_character, name_full or truncated
+pub fun postscript_name(f: *Font, buf: *u8, cap: usize) res[opt[usize], FontError] {
+    if (!sel f.name_off.some) { ret res[opt[usize], FontError].ok{opt[usize].none{}}; }
+    ret name.postscript_name(f.data, f.len, f.name_off.some, buf, cap);
 }
 
 # map a unicode codepoint to a glyph index through the selected cmap subtable
@@ -542,13 +596,13 @@ fun build_font() {
 }
 
 #[testing]
-var e2e_pts: [8]glyf.Point;
+var e2e_pts:   [8]glyf.Point;
 #[testing]
-var e2e_ends: [4]u16;
+var e2e_ends:  [4]u16;
 #[testing]
 var e2e_edges: [64]raster.Edge;
 #[testing]
-var e2e_bmp: [64]u8;
+var e2e_bmp:   [64]u8;
 
 # prepare a fixture font, reporting failure as a zeroed handle
 #[testing]
@@ -877,13 +931,13 @@ fun build_dejavu() {
 }
 
 #[testing]
-var dv_pts: [16]glyf.Point;
+var dv_pts:   [16]glyf.Point;
 #[testing]
-var dv_ends: [4]u16;
+var dv_ends:  [4]u16;
 #[testing]
 var dv_edges: [128]raster.Edge;
 #[testing]
-var dv_bmp: [80]u8;
+var dv_bmp:   [80]u8;
 
 test glyph_outline__composite {
     build_dejavu();

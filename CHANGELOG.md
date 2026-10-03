@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-02
+
+### Added
+- Subsetting (#66): `subset` closes a glyph list over composite references and writes a standalone TrueType font of those glyphs into a caller buffer, with component indices renumbered, table checksums and `head.checkSumAdjustment` recomputed, and `cvt `, `fpgm` and `prep` carried over. Readers for the PostScript name (`name`), `post` and `OS/2` give a PDF font descriptor its fields. Nothing allocates. Subsetting leaves the README's non-goals.
+
 ## [0.9.0] - 2026-09-26
 
 ### Changed

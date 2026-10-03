@@ -533,7 +533,7 @@ fun build_triangle() {
 }
 
 #[testing]
-var tri_pts: [8]Point;
+var tri_pts:  [8]Point;
 #[testing]
 var tri_ends: [4]u16;
 

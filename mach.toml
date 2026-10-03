@@ -1,12 +1,11 @@
 [project]
 id          = "font"
-version     = "0.9.0"
+version     = "0.10.0"
 mach        = "^6"
 src         = "src"
 out         = "out/{target.name}/{profile.name}"
 
 [target.linux-x86_64]
-default = true
 isa = "x86_64"
 os  = "linux"
 abi = "sysv64"
