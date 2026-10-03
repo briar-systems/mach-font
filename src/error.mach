@@ -47,6 +47,12 @@ pub tag TableId: u8 {
 # edges_full:              the caller's edge buffer is too small
 # name_full:               the caller's name buffer is too small
 # name_character:          a postscript name holds this character, which it may not
+# glyphs_full:             the caller's glyph list is too small for a closure
+# output_full:             the caller's output buffer is too small for a subset
+# too_many_glyphs:         a subset lists more than the 65535 glyphs a font can count
+# notdef_first:            a subset does not list glyph 0, .notdef, first
+# duplicate_glyph:         a subset lists this glyph twice
+# unlisted_component:      a subset lists a composite but not this glyph it references
 pub tag FontError: u8 {
     truncated:     usize;
     not_truetype:  u32;
@@ -74,4 +80,10 @@ pub tag FontError: u8 {
     edges_full;
     name_full;
     name_character: u16;
+    glyphs_full;
+    output_full;
+    too_many_glyphs;
+    notdef_first;
+    duplicate_glyph:    u16;
+    unlisted_component: u16;
 }
