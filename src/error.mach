@@ -45,6 +45,8 @@ pub tag TableId: u8 {
 # points_full:             the caller's point buffer is too small
 # contours_full:           the caller's contour-end buffer is too small
 # edges_full:              the caller's edge buffer is too small
+# name_full:               the caller's name buffer is too small
+# name_character:          a postscript name holds this character, which it may not
 pub tag FontError: u8 {
     truncated:     usize;
     not_truetype:  u32;
@@ -70,4 +72,6 @@ pub tag FontError: u8 {
     points_full;
     contours_full;
     edges_full;
+    name_full;
+    name_character: u16;
 }

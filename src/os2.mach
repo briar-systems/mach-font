@@ -1,0 +1,126 @@
+# the os/2 and windows metrics table
+#
+# `OS/2` carries the face's weight and width classes, its embedding permissions,
+# and the typographic metrics a layout or document format prefers to hhea's. the
+# version 0 table ends after the windows metrics, and version 2 adds the x and
+# cap heights. all reads are bounds-checked through font.read.
+
+use font.error.FontError;
+use font.read;
+use std.types.option.opt;
+use std.types.result.res;
+use std.types.size.usize;
+
+# the OS/2 fields that describe a face
+# ---
+# version:        the table version
+# weight_class:   visual weight, 100 thin to 900 black, 400 regular
+# width_class:    relative width, 1 ultra-condensed to 9 ultra-expanded, 5 normal
+# fs_type:        the embedding permission bits
+# typo_ascender:  the typographic ascender, in font units
+# typo_descender: the typographic descender, in font units, typically negative
+# typo_line_gap:  the typographic line gap, in font units
+# win_ascent:     the clipping ascent windows uses, in font units
+# win_descent:    the clipping descent windows uses, in font units, positive
+# x_height:       the height of a flat lowercase letter, none before version 2
+# cap_height:     the height of a flat capital letter, none before version 2
+pub rec Os2 {
+    version:        u16;
+    weight_class:   u16;
+    width_class:    u16;
+    fs_type:        u16;
+    typo_ascender:  i16;
+    typo_descender: i16;
+    typo_line_gap:  i16;
+    win_ascent:     u16;
+    win_descent:    u16;
+    x_height:       opt[i16];
+    cap_height:     opt[i16];
+}
+
+# parse the OS/2 table at off
+# ---
+# data: pointer to the first byte of the file
+# len:  number of bytes addressable through data
+# off:  byte offset of the OS/2 table
+# ret:  the parsed fields, or truncated
+pub fun parse_os2(data: *u8, len: usize, off: usize) res[Os2, FontError] {
+    var t:       Os2;
+    val version: res[u16, FontError] = read.read_u16(data, len, off);
+    if (sel version.err) { ret res[Os2, FontError].err{version.err}; }
+    val weight: res[u16, FontError] = read.read_u16(data, len, off + 4);
+    if (sel weight.err) { ret res[Os2, FontError].err{weight.err}; }
+    val width: res[u16, FontError] = read.read_u16(data, len, off + 6);
+    if (sel width.err) { ret res[Os2, FontError].err{width.err}; }
+    val permissions: res[u16, FontError] = read.read_u16(data, len, off + 8);
+    if (sel permissions.err) { ret res[Os2, FontError].err{permissions.err}; }
+    val ascender: res[i16, FontError] = read.read_i16(data, len, off + 68);
+    if (sel ascender.err) { ret res[Os2, FontError].err{ascender.err}; }
+    val descender: res[i16, FontError] = read.read_i16(data, len, off + 70);
+    if (sel descender.err) { ret res[Os2, FontError].err{descender.err}; }
+    val gap: res[i16, FontError] = read.read_i16(data, len, off + 72);
+    if (sel gap.err) { ret res[Os2, FontError].err{gap.err}; }
+    val win_ascent: res[u16, FontError] = read.read_u16(data, len, off + 74);
+    if (sel win_ascent.err) { ret res[Os2, FontError].err{win_ascent.err}; }
+    val win_descent: res[u16, FontError] = read.read_u16(data, len, off + 76);
+    if (sel win_descent.err) { ret res[Os2, FontError].err{win_descent.err}; }
+    t.version        = version.ok;
+    t.weight_class   = weight.ok;
+    t.width_class    = width.ok;
+    t.fs_type        = permissions.ok;
+    t.typo_ascender  = ascender.ok;
+    t.typo_descender = descender.ok;
+    t.typo_line_gap  = gap.ok;
+    t.win_ascent     = win_ascent.ok;
+    t.win_descent    = win_descent.ok;
+    t.x_height       = opt[i16].none{};
+    t.cap_height     = opt[i16].none{};
+    if (version.ok >= 2) {
+        val x: res[i16, FontError] = read.read_i16(data, len, off + 86);
+        if (sel x.err) { ret res[Os2, FontError].err{x.err}; }
+        val cap: res[i16, FontError] = read.read_i16(data, len, off + 88);
+        if (sel cap.err) { ret res[Os2, FontError].err{cap.err}; }
+        t.x_height   = opt[i16].some{x.ok};
+        t.cap_height = opt[i16].some{cap.ok};
+    }
+    ret res[Os2, FontError].ok{t};
+}
+
+#[testing]
+fun w16(buf: *u8, off: usize, v: u16) {
+    buf[off]     = (v >> 8)::u8;
+    buf[off + 1] = (v & 0xFF)::u8;
+}
+
+#[testing]
+var os2_buf: [96]u8;
+
+test parse_os2__fields_by_version {
+    w16(?os2_buf[0], 0, 0);
+    w16(?os2_buf[0], 4, 700);
+    w16(?os2_buf[0], 6, 5);
+    w16(?os2_buf[0], 8, 8);
+    w16(?os2_buf[0], 68, 1500);
+    w16(?os2_buf[0], 70, 0xFE0C); # -500
+    w16(?os2_buf[0], 72, 90);
+    w16(?os2_buf[0], 74, 1800);
+    w16(?os2_buf[0], 76, 600);
+    w16(?os2_buf[0], 86, 1000);
+    w16(?os2_buf[0], 88, 1400);
+    val v0: res[Os2, FontError] = parse_os2(?os2_buf[0], 78, 0);
+    if (!sel v0.ok)                                                  { ret 1; }
+    if (v0.ok.weight_class != 700 || v0.ok.fs_type != 8)             { ret 2; }
+    if (v0.ok.typo_ascender != 1500 || v0.ok.typo_descender != -500) { ret 3; }
+    if (v0.ok.win_ascent != 1800 || v0.ok.win_descent != 600)        { ret 4; }
+    if (sel v0.ok.cap_height.some)                                   { ret 5; }
+    w16(?os2_buf[0], 0, 4);
+    val v4: res[Os2, FontError] = parse_os2(?os2_buf[0], 96, 0);
+    if (!sel v4.ok)                    { ret 6; }
+    if (!sel v4.ok.cap_height.some)    { ret 7; }
+    if (v4.ok.cap_height.some != 1400) { ret 7; }
+    if (!sel v4.ok.x_height.some)      { ret 8; }
+    if (v4.ok.x_height.some != 1000)   { ret 8; }
+    val short: res[Os2, FontError] = parse_os2(?os2_buf[0], 78, 0);
+    if (!(sel short.err && sel short.err.truncated)) { ret 9; }
+    ret 0;
+}
