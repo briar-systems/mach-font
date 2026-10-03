@@ -39,6 +39,10 @@ mach dep add . font --git https://github.com/briar-systems/mach-font --ref branc
 - Glyph rasterization at [stb_truetype](https://github.com/nothings/stb)-level
   quality: quadratic outlines flattened and scan-filled to an anti-aliased
   coverage bitmap.
+- Subsetting: a standalone TrueType file holding only the glyphs a caller lists,
+  composites completed and renumbered, with valid checksums, for embedding in a
+  document. The face description a document format needs (PostScript name,
+  `post` and `OS/2` fields) reads alongside it.
 - Atlas-friendly output: glyph coverage plus the metrics (advance, bearings,
   bounding box, pair kerning) a renderer needs to lay glyphs into a texture
   atlas.
@@ -56,7 +60,7 @@ mach dep add . font --git https://github.com/briar-systems/mach-font --ref branc
 - **CFF/OTF outlines.** `mach-font` reads `glyf` (quadratic) outlines only;
   `OTTO` files, whose cubic outlines live in a `CFF ` table, are rejected at
   `init` rather than partially parsed.
-- Font editing or subsetting. `mach-font` reads fonts; it does not write them.
+- Font editing. The only font `mach-font` writes is a subset of one it read.
 
 ## Platforms
 
@@ -84,6 +88,10 @@ src/
   kern.mach     pair kerning (format 0 horizontal)
   loca.mach     glyph location table (short and long offsets)
   glyf.mach     glyph outlines: point extraction + composite component records
+  post.mach     italic angle, underline and fixed-pitch flag
+  os2.mach      weight and width class, embedding bits, typographic metrics
+  name.mach     the PostScript name
+  subset.mach   glyph closure and the subset writer
   raster.mach   outline flattening + coverage-bitmap fill
   info.mach     the Font facade tying the tables together
 ```

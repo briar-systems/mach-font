@@ -1,0 +1,676 @@
+# font subsetting
+#
+# a subset is a standalone truetype file holding only the glyphs a caller
+# lists, in the order listed: glyph i of the subset is the ith listed glyph of
+# the source. `closure` completes a list with the glyphs its composites draw,
+# `subset_size` measures the file, and `write_subset` writes it into a caller's
+# buffer. the subset carries head, hhea, maxp, hmtx, loca and glyf rebuilt for
+# the new glyph order, with each composite's component indices renumbered, and
+# copies cvt, fpgm and prep when the source has them, so hinting still runs.
+# cmap, name, post, OS/2 and the layout tables are left out: a consumer that
+# embeds a subset addresses its glyphs by index. the table directory is sorted
+# by tag, every table is padded to four bytes and checksummed, and head's
+# checksum adjustment balances the file. the output depends only on the source
+# and the list, so the same request gives the same bytes on every host.
+
+use font.error.FontError;
+use font.error.TableId;
+use font.glyf;
+use font.hmtx;
+use font.info;
+use font.loca;
+use font.read;
+use font.table;
+use std.system.capability;
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+use std.types.option.opt;
+use std.types.result.res;
+use std.types.size.usize;
+
+# the four-byte table tags in the ascending order the directory lists them
+val CVT:  u32 = 0x63767420;
+val FPGM: u32 = 0x6670676D;
+val GLYF: u32 = 0x676C7966;
+val HEAD: u32 = 0x68656164;
+val HHEA: u32 = 0x68686561;
+val HMTX: u32 = 0x686D7478;
+val LOCA: u32 = 0x6C6F6361;
+val MAXP: u32 = 0x6D617870;
+val PREP: u32 = 0x70726570;
+
+val TAGS: [9]u32 = [9]u32{CVT, FPGM, GLYF, HEAD, HHEA, HMTX, LOCA, MAXP, PREP};
+
+# the smallest head, hhea and maxp tables that hold the fields a subset rewrites
+val HEAD_MIN: usize = 54;
+val HHEA_MIN: usize = 36;
+val MAXP_MIN: usize = 6;
+
+# the value every truetype file's checksum, adjustment included, sums to
+val CHECKSUM_MAGIC: u32 = 0xB1B0AFBA;
+
+# the largest glyf table short loca offsets reach
+val SHORT_GLYF_MAX: usize = 0x1FFFE;
+
+# one table of the subset, by its index in TAGS
+# ---
+# present: the subset carries the table
+# source:  the source table's offset, for a table copied or patched from it
+# length:  the table's length in the subset, before padding
+# offset:  where the table lands in the subset
+rec Slot {
+    present: bool;
+    source:  usize;
+    length:  usize;
+    offset:  usize;
+}
+
+# the measured shape of a subset
+# ---
+# slots:  each table, by its index in TAGS
+# tables: the count of tables present
+# short:  loca uses short offsets
+# size:   the subset's total length in bytes
+rec Plan {
+    slots:  [9]Slot;
+    tables: usize;
+    short:  bool;
+    size:   usize;
+}
+
+fun pad4(n: usize) usize {
+    ret (n + 3) & ~(3::usize);
+}
+
+fun put16(out: *u8, off: usize, v: u16) {
+    out[off]     = (v >> 8)::u8;
+    out[off + 1] = (v & 0xFF)::u8;
+}
+
+fun put32(out: *u8, off: usize, v: u32) {
+    out[off]     = (v >> 24)::u8;
+    out[off + 1] = ((v >> 16) & 0xFF)::u8;
+    out[off + 2] = ((v >> 8) & 0xFF)::u8;
+    out[off + 3] = (v & 0xFF)::u8;
+}
+
+fun get32(out: *u8, off: usize) u32 {
+    ret (out[off]::u32 << 24) | (out[off + 1]::u32 << 16) | (out[off + 2]::u32 << 8) | out[off + 3]::u32;
+}
+
+# the sum of the big-endian words over len bytes at off, padded with zeros
+fun checksum(out: *u8, off: usize, len: usize) u32 {
+    var sum: u32   = 0;
+    var i:   usize = 0;
+    for (i < pad4(len)) {
+        sum = sum + get32(out, off + i);
+        i   = i + 4;
+    }
+    ret sum;
+}
+
+# where glyph sits in a list
+fun position(glyphs: *u16, count: usize, glyph: u16) opt[usize] {
+    var i: usize = 0;
+    for (i < count) {
+        if (glyphs[i] == glyph) { ret opt[usize].some{i}; }
+        i = i + 1;
+    }
+    ret opt[usize].none{};
+}
+
+# the absolute byte range of a glyph's data, after checking the index
+fun glyph_span(f: *info.Font, glyph: u16) res[loca.GlyphRange, FontError] {
+    if (!sel f.loca_off.some)  { ret res[loca.GlyphRange, FontError].err{FontError.missing_table{TableId.loca{}}}; }
+    if (!sel f.glyf_off.some)  { ret res[loca.GlyphRange, FontError].err{FontError.missing_table{TableId.glyf{}}}; }
+    if (glyph >= f.num_glyphs) { ret res[loca.GlyphRange, FontError].err{FontError.glyph_out_of_range{glyph}}; }
+    val range: res[loca.GlyphRange, FontError] = loca.glyph_range(f.data, f.len, f.loca_off.some, f.head.index_to_loc_format, glyph);
+    if (sel range.err) { ret range; }
+    val base: u32 = f.glyf_off.some::u32;
+    ret res[loca.GlyphRange, FontError].ok{loca.GlyphRange{start: base + range.ok.start, end: base + range.ok.end}};
+}
+
+# whether a glyph's data is a composite, false for an empty glyph
+fun composite(f: *info.Font, span: loca.GlyphRange) res[bool, FontError] {
+    if (loca.is_empty(?span)) { ret res[bool, FontError].ok{false}; }
+    val header: res[glyf.GlyphHeader, FontError] = glyf.glyph_header(f.data, f.len, span.start::usize);
+    if (sel header.err) { ret res[bool, FontError].err{header.err}; }
+    ret res[bool, FontError].ok{glyf.is_composite(?header.ok)};
+}
+
+# extend a glyph list with every glyph its composites reference, transitively
+#
+# each glyph a listed composite draws and the list lacks is appended, so the
+# glyphs already listed keep their places and the list is ready for
+# write_subset.
+# ---
+# f:      prepared font handle
+# glyphs: the list, with room for cap glyphs
+# count:  the glyphs listed
+# cap:    the list's capacity
+# ret:    the count with the components appended, or missing_table (loca or
+#         glyf), glyph_out_of_range, glyphs_full, a loca failure or truncated
+pub fun closure(f: *info.Font, glyphs: *u16, count: usize, cap: usize) res[usize, FontError] {
+    var n: usize = count;
+    var i: usize = 0;
+    for (i < n) {
+        val span: res[loca.GlyphRange, FontError] = glyph_span(f, glyphs[i]);
+        if (sel span.err) { ret res[usize, FontError].err{span.err}; }
+        val nested: res[bool, FontError] = composite(f, span.ok);
+        if (sel nested.err) { ret res[usize, FontError].err{nested.err}; }
+        if (nested.ok) {
+            var off:  usize = span.ok.start::usize + glyf.COMPONENTS_OFFSET;
+            var more: bool  = true;
+            for (more) {
+                val c: res[glyf.Component, FontError] = glyf.read_component(f.data, f.len, off);
+                if (sel c.err) { ret res[usize, FontError].err{c.err}; }
+                val listed: opt[usize] = position(glyphs, n, c.ok.glyph);
+                if (sel listed.none) {
+                    if (n == cap) { ret res[usize, FontError].err{FontError.glyphs_full{}}; }
+                    glyphs[n] = c.ok.glyph;
+                    n         = n + 1;
+                }
+                more = (c.ok.flags & glyf.MORE_COMPONENTS) != 0;
+                off  = c.ok.next;
+            }
+        }
+        i = i + 1;
+    }
+    ret res[usize, FontError].ok{n};
+}
+
+# a source table's span, checked to lie within the file
+fun source_table(f: *info.Font, tag: u32) res[opt[table.Table], FontError] {
+    val found: res[opt[table.Table], FontError] = table.find_table(f.data, f.len, (tag >> 24)::u8,
+        ((tag >> 16) & 0xFF)::u8, ((tag >> 8) & 0xFF)::u8, (tag & 0xFF)::u8);
+    if (sel found.err) { ret found; }
+    if (sel found.ok.some) {
+        val end: usize = found.ok.some.offset::usize + found.ok.some.length::usize;
+        if (end > f.len) { ret res[opt[table.Table], FontError].err{FontError.truncated{end}}; }
+    }
+    ret found;
+}
+
+# set a slot from a source table, which must be present and at least least bytes
+fun required(f: *info.Font, p: *Plan, index: usize, id: TableId, least: usize) opt[FontError] {
+    val found: res[opt[table.Table], FontError] = source_table(f, TAGS[index]);
+    if (sel found.err)     { ret opt[FontError].some{found.err}; }
+    if (sel found.ok.none) { ret opt[FontError].some{FontError.missing_table{id}}; }
+    val t: table.Table = found.ok.some;
+    if (t.length::usize < least) {
+        ret opt[FontError].some{FontError.truncated{t.offset::usize + t.length::usize}};
+    }
+    p.slots[index] = Slot{present: true, source: t.offset::usize, length: t.length::usize, offset: 0};
+    ret opt[FontError].none{};
+}
+
+# set a slot from a source table copied verbatim when the source has it
+fun optional(f: *info.Font, p: *Plan, index: usize) opt[FontError] {
+    val found: res[opt[table.Table], FontError] = source_table(f, TAGS[index]);
+    if (sel found.err) { ret opt[FontError].some{found.err}; }
+    if (sel found.ok.some) {
+        p.slots[index] = Slot{present: true, source: found.ok.some.offset::usize, length: found.ok.some.length::usize, offset: 0};
+    }
+    ret opt[FontError].none{};
+}
+
+# check a list and measure the subset it gives
+fun plan(f: *info.Font, glyphs: *u16, count: usize) res[Plan, FontError] {
+    if (count > 0xFFFF)               { ret res[Plan, FontError].err{FontError.too_many_glyphs{}}; }
+    if (count == 0 || glyphs[0] != 0) { ret res[Plan, FontError].err{FontError.notdef_first{}}; }
+    if (!sel f.hhea.some)             { ret res[Plan, FontError].err{FontError.missing_table{TableId.hhea{}}}; }
+    if (!sel f.hmtx_off.some)         { ret res[Plan, FontError].err{FontError.missing_table{TableId.hmtx{}}}; }
+
+    var p: Plan;
+    var t: usize = 0;
+    for (t < 9) {
+        p.slots[t] = Slot{present: false, source: 0, length: 0, offset: 0};
+        t          = t + 1;
+    }
+
+    var glyf_len: usize = 0;
+    var i:        usize = 0;
+    for (i < count) {
+        val g:       u16        = glyphs[i];
+        val earlier: opt[usize] = position(glyphs, i, g);
+        if (sel earlier.some) { ret res[Plan, FontError].err{FontError.duplicate_glyph{g}}; }
+        val span: res[loca.GlyphRange, FontError] = glyph_span(f, g);
+        if (sel span.err) { ret res[Plan, FontError].err{span.err}; }
+        val nested: res[bool, FontError] = composite(f, span.ok);
+        if (sel nested.err) { ret res[Plan, FontError].err{nested.err}; }
+        if (nested.ok) {
+            var off:  usize = span.ok.start::usize + glyf.COMPONENTS_OFFSET;
+            var more: bool  = true;
+            for (more) {
+                val c: res[glyf.Component, FontError] = glyf.read_component(f.data, f.len, off);
+                if (sel c.err) { ret res[Plan, FontError].err{c.err}; }
+                val listed: opt[usize] = position(glyphs, count, c.ok.glyph);
+                if (sel listed.none) {
+                    ret res[Plan, FontError].err{FontError.unlisted_component{c.ok.glyph}};
+                }
+                more = (c.ok.flags & glyf.MORE_COMPONENTS) != 0;
+                off  = c.ok.next;
+            }
+        }
+        val end: usize = span.ok.end::usize;
+        if (end > f.len) { ret res[Plan, FontError].err{FontError.truncated{end}}; }
+        glyf_len = glyf_len + pad4((span.ok.end - span.ok.start)::usize);
+        i        = i + 1;
+    }
+
+    val failed: opt[FontError] = required(f, ?p, 3, TableId.head{}, HEAD_MIN);
+    if (sel failed.some) { ret res[Plan, FontError].err{failed.some}; }
+    val hhea_failed: opt[FontError] = required(f, ?p, 4, TableId.hhea{}, HHEA_MIN);
+    if (sel hhea_failed.some) { ret res[Plan, FontError].err{hhea_failed.some}; }
+    val maxp_failed: opt[FontError] = required(f, ?p, 7, TableId.maxp{}, MAXP_MIN);
+    if (sel maxp_failed.some) { ret res[Plan, FontError].err{maxp_failed.some}; }
+    var copied: [3]usize = [3]usize{0, 1, 8};
+    var k:      usize    = 0;
+    for (k < 3) {
+        val copy_failed: opt[FontError] = optional(f, ?p, copied[k]);
+        if (sel copy_failed.some) { ret res[Plan, FontError].err{copy_failed.some}; }
+        k = k + 1;
+    }
+
+    p.short = glyf_len <= SHORT_GLYF_MAX;
+    var entry: usize = 4;
+    if (p.short) { entry = 2; }
+    p.slots[2] = Slot{present: true, source: 0, length: glyf_len, offset: 0};
+    p.slots[5] = Slot{present: true, source: 0, length: count * 4, offset: 0};
+    p.slots[6] = Slot{present: true, source: 0, length: (count + 1) * entry, offset: 0};
+
+    p.tables = 0;
+    t        = 0;
+    for (t < 9) {
+        if (p.slots[t].present) { p.tables = p.tables + 1; }
+        t = t + 1;
+    }
+    var at: usize = 12 + p.tables * 16;
+    t = 0;
+    for (t < 9) {
+        if (p.slots[t].present) {
+            p.slots[t].offset = at;
+            at                = at + pad4(p.slots[t].length);
+        }
+        t = t + 1;
+    }
+    p.size = at;
+    ret res[Plan, FontError].ok{p};
+}
+
+# measure the subset a glyph list gives
+# ---
+# f:      prepared font handle
+# glyphs: the glyphs in subset order, .notdef first and each once, with every
+#         component of a listed composite listed, as closure leaves them
+# count:  the glyphs listed
+# ret:    the subset's length in bytes, or the failure write_subset would report
+pub fun subset_size(f: *info.Font, glyphs: *u16, count: usize) res[usize, FontError] {
+    val p: res[Plan, FontError] = plan(f, glyphs, count);
+    if (sel p.err) { ret res[usize, FontError].err{p.err}; }
+    ret res[usize, FontError].ok{p.ok.size};
+}
+
+fun copy(f: *info.Font, out: *u8, to: usize, from: usize, len: usize) {
+    var i: usize = 0;
+    for (i < len) {
+        out[to + i] = f.data[from + i];
+        i           = i + 1;
+    }
+}
+
+# write glyf and loca: each glyph copied in list order, padded to four bytes,
+# with a composite's component indices renumbered to their places in the list
+fun glyphs_and_offsets(f: *info.Font, glyphs: *u16, count: usize, out: *u8, p: *Plan) opt[FontError] {
+    val glyf_at: usize = p.slots[2].offset;
+    val loca_at: usize = p.slots[6].offset;
+    var cursor:  usize = 0;
+    var i:       usize = 0;
+    for (i <= count) {
+        if (p.short) {
+            put16(out, loca_at + i * 2, (cursor / 2)::u16);
+        }
+        or {
+            put32(out, loca_at + i * 4, cursor::u32);
+        }
+        if (i == count) { brk; }
+        val span: res[loca.GlyphRange, FontError] = glyph_span(f, glyphs[i]);
+        if (sel span.err) { ret opt[FontError].some{span.err}; }
+        val start: usize = span.ok.start::usize;
+        val len:   usize = (span.ok.end - span.ok.start)::usize;
+        copy(f, out, glyf_at + cursor, start, len);
+        val nested: res[bool, FontError] = composite(f, span.ok);
+        if (sel nested.err) { ret opt[FontError].some{nested.err}; }
+        if (nested.ok) {
+            var off:  usize = start + glyf.COMPONENTS_OFFSET;
+            var more: bool  = true;
+            for (more) {
+                val c: res[glyf.Component, FontError] = glyf.read_component(f.data, f.len, off);
+                if (sel c.err) { ret opt[FontError].some{c.err}; }
+                val place: opt[usize] = position(glyphs, count, c.ok.glyph);
+                if (sel place.none) { ret opt[FontError].some{FontError.unlisted_component{c.ok.glyph}}; }
+                put16(out, glyf_at + cursor + (off - start) + 2, place.some::u16);
+                more = (c.ok.flags & glyf.MORE_COMPONENTS) != 0;
+                off  = c.ok.next;
+            }
+        }
+        cursor = cursor + pad4(len);
+        i      = i + 1;
+    }
+    ret opt[FontError].none{};
+}
+
+fun metrics(f: *info.Font, glyphs: *u16, count: usize, out: *u8, at: usize) opt[FontError] {
+    var i: usize = 0;
+    for (i < count) {
+        val m: res[hmtx.HMetrics, FontError] = info.glyph_hmetrics(f, glyphs[i]);
+        if (sel m.err) { ret opt[FontError].some{m.err}; }
+        put16(out, at + i * 4, m.ok.advance);
+        put16(out, at + i * 4 + 2, m.ok.lsb:~u16);
+        i = i + 1;
+    }
+    ret opt[FontError].none{};
+}
+
+# write the subset a glyph list gives into a caller's buffer
+#
+# the list is checked whole before anything is written, so a refused list
+# leaves the buffer as it was.
+# ---
+# f:      prepared font handle
+# glyphs: the glyphs in subset order, .notdef first and each once, with every
+#         component of a listed composite listed, as closure leaves them
+# count:  the glyphs listed
+# out:    the buffer receiving the subset
+# cap:    capacity of out in bytes, subset_size admits the subset
+# ret:    the subset's length in bytes, or too_many_glyphs, notdef_first,
+#         duplicate_glyph, unlisted_component, missing_table, output_full,
+#         glyph_out_of_range, no_long_metrics, a loca failure or truncated
+pub fun write_subset(f: *info.Font, glyphs: *u16, count: usize, out: *u8, cap: usize) res[usize, FontError] {
+    val planned: res[Plan, FontError] = plan(f, glyphs, count);
+    if (sel planned.err) { ret res[usize, FontError].err{planned.err}; }
+    var p: Plan = planned.ok;
+    if (p.size > cap) { ret res[usize, FontError].err{FontError.output_full{}}; }
+
+    var z: usize = 0;
+    for (z < p.size) {
+        out[z] = 0;
+        z      = z + 1;
+    }
+
+    # the offset table: the largest power of two not above the table count sizes the binary search fields
+    var power: usize = 1;
+    var log:   u16   = 0;
+    for (power * 2 <= p.tables) {
+        power = power * 2;
+        log   = log + 1;
+    }
+    put32(out, 0, 0x00010000);
+    put16(out, 4, p.tables::u16);
+    put16(out, 6, (power * 16)::u16);
+    put16(out, 8, log);
+    put16(out, 10, ((p.tables - power) * 16)::u16);
+
+    val n: u16   = count::u16;
+    var t: usize = 0;
+    for (t < 9) {
+        val s: Slot = p.slots[t];
+        if (s.present && t != 2 && t != 5 && t != 6) {
+            copy(f, out, s.offset, s.source, s.length);
+        }
+        t = t + 1;
+    }
+    val head_at: usize = p.slots[3].offset;
+    put32(out, head_at + 8, 0);
+    if (p.short) {
+        put16(out, head_at + 50, 0);
+    }
+    or {
+        put16(out, head_at + 50, 1);
+    }
+    put16(out, p.slots[4].offset + 34, n);
+    put16(out, p.slots[7].offset + 4, n);
+
+    val wrote: opt[FontError] = glyphs_and_offsets(f, glyphs, count, out, ?p);
+    if (sel wrote.some) { ret res[usize, FontError].err{wrote.some}; }
+    val measured: opt[FontError] = metrics(f, glyphs, count, out, p.slots[5].offset);
+    if (sel measured.some) { ret res[usize, FontError].err{measured.some}; }
+
+    var entry: usize = 12;
+    t = 0;
+    for (t < 9) {
+        val s: Slot = p.slots[t];
+        if (s.present) {
+            put32(out, entry, TAGS[t]);
+            put32(out, entry + 4, checksum(out, s.offset, s.length));
+            put32(out, entry + 8, s.offset::u32);
+            put32(out, entry + 12, s.length::u32);
+            entry = entry + 16;
+        }
+        t = t + 1;
+    }
+    put32(out, head_at + 8, CHECKSUM_MAGIC - checksum(out, 0, p.size));
+    ret res[usize, FontError].ok{p.size};
+}
+
+#[testing]
+fun w16(buf: *u8, off: usize, v: u16) {
+    buf[off]     = (v >> 8)::u8;
+    buf[off + 1] = (v & 0xFF)::u8;
+}
+
+#[testing]
+fun entry(buf: *u8, index: usize, tag: u32, off: usize, len: usize) {
+    put32(buf, 12 + index * 16, tag);
+    put32(buf, 12 + index * 16 + 8, off::u32);
+    put32(buf, 12 + index * 16 + 12, len::u32);
+}
+
+# a 23-byte simple glyph, the triangle (100,100), (300,100), (200,400)
+#[testing]
+fun triangle(buf: *u8, at: usize) {
+    w16(buf, at, 1);
+    w16(buf, at + 2, 100);
+    w16(buf, at + 4, 100);
+    w16(buf, at + 6, 300);
+    w16(buf, at + 8, 400);
+    w16(buf, at + 10, 2);
+    w16(buf, at + 12, 0);
+    buf[at + 14] = 0x37;
+    buf[at + 15] = 0x33;
+    buf[at + 16] = 0x03;
+    buf[at + 17] = 100;
+    buf[at + 18] = 200;
+    buf[at + 19] = 100;
+    buf[at + 20] = 100;
+    w16(buf, at + 21, 300);
+}
+
+# one component record with word offsets
+#[testing]
+fun component(buf: *u8, at: usize, flags: u16, glyph: u16, dx: i16, dy: i16) {
+    w16(buf, at, flags | glyf.ARG_1_AND_2_ARE_WORDS | glyf.ARGS_ARE_XY_VALUES);
+    w16(buf, at + 2, glyph);
+    w16(buf, at + 4, dx:~u16);
+    w16(buf, at + 6, dy:~u16);
+}
+
+# five glyphs: 0 and 1 triangles, 2 a composite of 1, 3 a composite of 2 and
+# 1, 4 empty. a three-byte fpgm checks a copied table is padded
+#[testing]
+var source_buf: [360]u8;
+
+#[testing]
+fun build_source() {
+    val p: *u8 = ?source_buf[0];
+    put32(p, 0, 0x00010000);
+    w16(p, 4, 7);
+    entry(p, 0, FPGM, 124, 3);
+    entry(p, 1, GLYF, 128, 92);
+    entry(p, 2, HEAD, 220, 54);
+    entry(p, 3, HHEA, 276, 36);
+    entry(p, 4, HMTX, 312, 14);
+    entry(p, 5, LOCA, 328, 24);
+    entry(p, 6, MAXP, 352, 6);
+
+    source_buf[124] = 0xB0;
+    source_buf[125] = 0x01;
+    source_buf[126] = 0x2C;
+
+    triangle(p, 128);
+    triangle(p, 152);
+    w16(p, 176, 0xFFFF);
+    component(p, 186, 0, 1, 50, -20);
+    w16(p, 194, 0xFFFF);
+    component(p, 204, glyf.MORE_COMPONENTS, 2, 0, 0);
+    component(p, 212, 0, 1, 300, 0);
+
+    put32(p, 220 + 12, 0x5F0F3CF5);
+    w16(p, 220 + 18, 1000);
+    w16(p, 220 + 50, 1);
+
+    w16(p, 276 + 4, 800);
+    w16(p, 276 + 6, 0xFF38);
+    w16(p, 276 + 34, 2);
+
+    w16(p, 312, 500);
+    w16(p, 314, 10);
+    w16(p, 316, 600);
+    w16(p, 318, 20);
+    w16(p, 320, 30);
+    w16(p, 322, 40);
+    w16(p, 324, 0);
+
+    var starts: [6]u32 = [6]u32{0, 24, 48, 66, 92, 92};
+    var i:      usize  = 0;
+    for (i < 6) {
+        put32(p, 328 + i * 4, starts[i]);
+        i = i + 1;
+    }
+
+    put32(p, 352, 0x00005000);
+    w16(p, 352 + 4, 5);
+}
+
+#[testing]
+var subset_buf:   [512]u8;
+#[testing]
+var source_pts:   [16]glyf.Point;
+#[testing]
+var subset_pts:   [16]glyf.Point;
+#[testing]
+var outline_ends: [8]u16;
+
+# whether glyph a of one font and glyph b of another resolve to the same outline and metrics
+#[testing]
+fun same_glyph(source: *info.Font, a: u16, sub: *info.Font, b: u16) bool {
+    val x: res[glyf.Outline, FontError] = info.glyph_outline(source, a, ?source_pts[0], 16, ?outline_ends[0], 8);
+    val y: res[glyf.Outline, FontError] = info.glyph_outline(sub, b, ?subset_pts[0], 16, ?outline_ends[0], 8);
+    if (!sel x.ok)                          { ret false; }
+    if (!sel y.ok)                          { ret false; }
+    if (x.ok.num_points != y.ok.num_points) { ret false; }
+    var i: usize = 0;
+    for (i < x.ok.num_points::usize) {
+        if (source_pts[i].x != subset_pts[i].x || source_pts[i].y != subset_pts[i].y) { ret false; }
+        i = i + 1;
+    }
+    val m: res[hmtx.HMetrics, FontError] = info.glyph_hmetrics(source, a);
+    val n: res[hmtx.HMetrics, FontError] = info.glyph_hmetrics(sub, b);
+    if (!sel m.ok) { ret false; }
+    if (!sel n.ok) { ret false; }
+    ret m.ok.advance == n.ok.advance && m.ok.lsb == n.ok.lsb;
+}
+
+test write_subset__keeps_components_outlines_and_metrics {
+    build_source();
+    val opened: res[info.Font, FontError] = info.init(?source_buf[0], 360);
+    if (!sel opened.ok) { ret 1; }
+    var source: info.Font             = opened.ok;
+    var glyphs: [8]u16                = [8]u16{0, 3, 0, 0, 0, 0, 0, 0};
+    val closed: res[usize, FontError] = closure(?source, ?glyphs[0], 2, 8);
+    if (!sel closed.ok)                                     { ret 2; }
+    if (closed.ok != 4 || glyphs[2] != 2 || glyphs[3] != 1) { ret 3; }
+    val size: res[usize, FontError] = subset_size(?source, ?glyphs[0], 4);
+    if (!sel size.ok) { ret 4; }
+    val wrote: res[usize, FontError] = write_subset(?source, ?glyphs[0], 4, ?subset_buf[0], 512);
+    if (!sel wrote.ok)       { ret 5; }
+    if (wrote.ok != size.ok) { ret 6; }
+
+    val reopened: res[info.Font, FontError] = info.init(?subset_buf[0], wrote.ok);
+    if (!sel reopened.ok) { ret 7; }
+    var sub: info.Font = reopened.ok;
+    if (sub.num_glyphs != 4)              { ret 8; }
+    if (!sel sub.hhea.some)               { ret 9; }
+    if (sub.hhea.some.num_h_metrics != 4) { ret 9; }
+    var i: usize = 0;
+    for (i < 4) {
+        if (!same_glyph(?source, glyphs[i], ?sub, i::u16)) { ret 10; }
+        i = i + 1;
+    }
+    # the copied fpgm keeps its bytes
+    val fpgm: res[opt[table.Table], FontError] = table.find_table(?subset_buf[0], wrote.ok, 'f', 'p', 'g', 'm');
+    if (!sel fpgm.ok)                                       { ret 11; }
+    if (!sel fpgm.ok.some)                                  { ret 11; }
+    if (fpgm.ok.some.length != 3)                           { ret 11; }
+    if (subset_buf[fpgm.ok.some.offset::usize + 2] != 0x2C) { ret 11; }
+    ret 0;
+}
+
+test write_subset__checksums_verify {
+    build_source();
+    val opened: res[info.Font, FontError] = info.init(?source_buf[0], 360);
+    if (!sel opened.ok) { ret 1; }
+    var source: info.Font             = opened.ok;
+    var glyphs: [4]u16                = [4]u16{0, 2, 1, 4};
+    val wrote:  res[usize, FontError] = write_subset(?source, ?glyphs[0], 4, ?subset_buf[0], 512);
+    if (!sel wrote.ok)                                           { ret 2; }
+    if (checksum(?subset_buf[0], 0, wrote.ok) != CHECKSUM_MAGIC) { ret 3; }
+    val tables:  usize = get32(?subset_buf[0], 4)::usize >> 16;
+    var head_at: usize = 0;
+    var i:       usize = 0;
+    for (i < tables) {
+        if (get32(?subset_buf[0], 12 + i * 16) == HEAD) { head_at = get32(?subset_buf[0], 12 + i * 16 + 8)::usize; }
+        i = i + 1;
+    }
+    if (head_at == 0) { ret 4; }
+    val adjustment: u32 = get32(?subset_buf[0], head_at + 8);
+    put32(?subset_buf[0], head_at + 8, 0);
+    i = 0;
+    for (i < tables) {
+        val at:  usize = 12 + i * 16;
+        val sum: u32   = checksum(?subset_buf[0], get32(?subset_buf[0], at + 8)::usize, get32(?subset_buf[0], at + 12)::usize);
+        if (sum != get32(?subset_buf[0], at + 4)) { ret 5; }
+        i = i + 1;
+    }
+    put32(?subset_buf[0], head_at + 8, adjustment);
+    ret 0;
+}
+
+test write_subset__refuses_malformed_lists {
+    build_source();
+    val opened: res[info.Font, FontError] = info.init(?source_buf[0], 360);
+    if (!sel opened.ok) { ret 1; }
+    var source:   info.Font             = opened.ok;
+    var missing:  [2]u16                = [2]u16{0, 3};
+    val unlisted: res[usize, FontError] = write_subset(?source, ?missing[0], 2, ?subset_buf[0], 512);
+    if (!sel unlisted.err)                    { ret 2; }
+    if (!sel unlisted.err.unlisted_component) { ret 2; }
+    if (unlisted.err.unlisted_component != 2) { ret 2; }
+    val first: res[usize, FontError] = write_subset(?source, ?missing[1], 1, ?subset_buf[0], 512);
+    if (!sel first.err)              { ret 3; }
+    if (!sel first.err.notdef_first) { ret 3; }
+    var twice:     [3]u16                = [3]u16{0, 1, 1};
+    val duplicate: res[usize, FontError] = write_subset(?source, ?twice[0], 3, ?subset_buf[0], 512);
+    if (!sel duplicate.err)                 { ret 4; }
+    if (!sel duplicate.err.duplicate_glyph) { ret 4; }
+    if (duplicate.err.duplicate_glyph != 1) { ret 4; }
+    val small: res[usize, FontError] = write_subset(?source, ?twice[0], 2, ?subset_buf[0], 64);
+    if (!sel small.err)             { ret 5; }
+    if (!sel small.err.output_full) { ret 5; }
+    var room: [3]u16                = [3]u16{0, 3, 0};
+    val full: res[usize, FontError] = closure(?source, ?room[0], 2, 3);
+    if (!sel full.err)             { ret 6; }
+    if (!sel full.err.glyphs_full) { ret 6; }
+    ret 0;
+}
